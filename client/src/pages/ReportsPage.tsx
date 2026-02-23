@@ -428,7 +428,12 @@ export default function ReportsPage() {
       doc.line(130, finalY, 190, finalY);
 
       // Assinatura do Solicitante
-      const requester = users.find(u => String(u.id) === String(schedule.requesterId));
+      let requester = users.find(u => String(u.id) === String(schedule.requesterId));
+
+      if (!requester && String(schedule.requesterId) === String(currentUserId)) {
+        requester = user;
+      }
+
       if (requester?.signature && requester.signature.startsWith('data:image')) {
         try {
           doc.addImage(requester.signature, 'PNG', 30, finalY - 25, 40, 20);
