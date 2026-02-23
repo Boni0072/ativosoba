@@ -680,6 +680,46 @@ export default function AssetInventoryPage() {
         margin: { top: 45 }
       });
 
+      // Signatures
+      const finalY = (doc as any).lastAutoTable.finalY + 40;
+      
+      doc.setDrawColor(0);
+      doc.line(20, finalY, 80, finalY);
+      doc.line(130, finalY, 190, finalY);
+
+      // Assinatura do Solicitante
+      let requester = users.find(u => String(u.id) === String(schedule.requesterId));
+
+      if (!requester && (String(schedule.requesterId) === String(currentUserId) || !schedule.requesterId)) {
+        requester = user;
+      }
+
+      if (requester?.signature && requester.signature.startsWith('data:image')) {
+        try {
+          doc.addImage(requester.signature, 'PNG', 30, finalY - 25, 40, 20);
+        } catch (e) { console.warn("Erro ao adicionar assinatura do solicitante", e); }
+      }
+
+      // Assinatura do Responsável (pega o primeiro se houver múltiplos)
+      const responsibleId = schedule.userIds[0];
+      const responsible = users.find(u => String(u.id) === String(responsibleId));
+      if (responsible?.signature && responsible.signature.startsWith('data:image')) {
+        try {
+          doc.addImage(responsible.signature, 'PNG', 140, finalY - 25, 40, 20);
+        } catch (e) { console.warn("Erro ao adicionar assinatura do responsável", e); }
+      }
+      
+      doc.setFontSize(10);
+      doc.setTextColor(0);
+      doc.text("Assinatura do Solicitante", 50, finalY + 5, { align: 'center' });
+      doc.text("Assinatura do Responsável", 160, finalY + 5, { align: 'center' });
+      doc.text(requester?.name || "Solicitante", 50, finalY + 10, { align: 'center' });
+      doc.text(responsible?.name || "Responsável", 160, finalY + 10, { align: 'center' });
+
+      doc.setFontSize(8);
+      doc.setTextColor(100);
+      // Datas já estão no cabeçalho
+
       doc.save(`inventario_concluido_${dateObj.toISOString().split('T')[0]}.pdf`);
       toast.success("Relatório PDF gerado com sucesso!");
     } catch (error) {

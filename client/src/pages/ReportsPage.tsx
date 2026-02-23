@@ -430,7 +430,7 @@ export default function ReportsPage() {
       // Assinatura do Solicitante
       let requester = users.find(u => String(u.id) === String(schedule.requesterId));
 
-      if (!requester && String(schedule.requesterId) === String(currentUserId)) {
+      if (!requester && (String(schedule.requesterId) === String(currentUserId) || !schedule.requesterId)) {
         requester = user;
       }
 
