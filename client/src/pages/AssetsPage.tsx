@@ -51,6 +51,7 @@ export default function AssetsPage() {
   });
 
   const [assets, setAssets] = useState<any[]>([]);
+  const [expenses, setExpenses] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -58,6 +59,14 @@ export default function AssetsPage() {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setAssets(data);
       setIsLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "expenses"), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setExpenses(data);
     });
     return () => unsubscribe();
   }, []);
@@ -71,10 +80,6 @@ export default function AssetsPage() {
       }
     }
   }, [assets, viewOpen, viewingAsset]);
-
-  const { data: projectExpenses, refetch: refetchExpenses } = trpc.expenses.listByProject.useQuery(
-    { projectId: filters.projectId === "all" ? "all" : filters.projectId }
-  );
 
   const { data: accountingAccounts } = trpc.accounting.listAccounts.useQuery();
   const { data: assetClasses } = trpc.accounting.listAssetClasses.useQuery();
@@ -322,7 +327,6 @@ export default function AssetsPage() {
         assetId: null,
       } as any);
       toast.success("Despesa desvinculada do ativo!");
-      refetchExpenses(); // Invalida a query de despesas
     } catch (error) {
       toast.error("Erro ao desvincular despesa.");
     }
@@ -343,8 +347,8 @@ export default function AssetsPage() {
   };
 
   const getAssetExpenses = (asset: any) => {
-    if (!projectExpenses) return [];
-    return projectExpenses.filter((expense: any) => String(expense.assetId) === String(asset.id));
+    if (!expenses) return [];
+    return expenses.filter((expense: any) => String(expense.assetId) === String(asset.id));
   };
 
   const getAssetValue = (asset: any) => {
