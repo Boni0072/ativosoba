@@ -4,7 +4,7 @@ import { collection, onSnapshot } from "firebase/firestore";
 import { ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Tooltip as RechartsTooltip, PieChart, Pie, Cell, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid, LabelList } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Loader2, TrendingUp, DollarSign, Package, Activity, BarChart3, ArrowUpRight, AlertTriangle, TrendingDown, Target, Wallet, X } from "lucide-react";
+import { Loader2, TrendingUp, DollarSign, Package, Activity, BarChart3, ArrowUpRight, AlertTriangle, TrendingDown, Target, Wallet, X, ChevronDown, ChevronRight, ClipboardList, Calendar, CheckCircle2, Clock, FileText } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useLocation } from "wouter";
 
@@ -40,8 +40,13 @@ export default function Dashboard() {
   const [depreciationType, setDepreciationType] = useState<'fiscal' | 'corporate'>('fiscal');
   const [showBurnRateDetails, setShowBurnRateDetails] = useState(false);
   const [showAssetsModal, setShowAssetsModal] = useState(false);
+  const [isTablesExpanded, setIsTablesExpanded] = useState(false);
+  const [isInventoryDataExpanded, setIsInventoryDataExpanded] = useState(false);
+  const [isAssetsExpanded, setIsAssetsExpanded] = useState(false);
+  const [isScheduleAnalysisExpanded, setIsScheduleAnalysisExpanded] = useState(false);
 
   const [projects, setProjects] = useState<any[]>([]);
+  const [schedules, setSchedules] = useState<any[]>([]);
   const [expenses, setExpenses] = useState<any[]>([]);
   const [assets, setAssets] = useState<any[]>([]);
   const [allBudgets, setAllBudgets] = useState<any[]>([]);
@@ -64,6 +69,9 @@ export default function Dashboard() {
     const unsubAssetClasses = onSnapshot(collection(db, "asset_classes"), (snapshot) => {
       setAssetClasses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
+    const unsubSchedules = onSnapshot(collection(db, "inventory_schedules"), (snapshot) => {
+      setSchedules(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
 
     // Pequeno delay para garantir que o loading não pisque muito rápido ou fique preso
     const timer = setTimeout(() => setIsLoading(false), 800);
@@ -74,6 +82,7 @@ export default function Dashboard() {
       unsubAssets();
       unsubBudgets();
       unsubAssetClasses();
+      unsubSchedules();
       clearTimeout(timer);
     };
   }, []);
@@ -118,6 +127,13 @@ export default function Dashboard() {
   const assetsInProgress = assets?.filter(a => a.status !== 'concluido').length || 0;
   const assetsCompleted = assets?.filter(a => a.status === 'concluido').length || 0;
   const totalAssets = assets?.length || 0;
+
+  // Inventory Metrics
+  const totalSchedules = schedules?.length || 0;
+  const completedSchedules = schedules?.filter(s => s.status === 'completed').length || 0;
+  const pendingSchedules = schedules?.filter(s => s.status === 'pending').length || 0;
+  const waitingApprovalSchedules = schedules?.filter(s => s.status === 'waiting_approval').length || 0;
+  const inventoryCompletionRate = totalSchedules > 0 ? (completedSchedules / totalSchedules) * 100 : 0;
 
   // Asset Classes Metrics (Calculated)
   const assetClassesData = useMemo(() => {
@@ -882,7 +898,11 @@ export default function Dashboard() {
       {viewMode === 'assets' && (
       <div className="space-y-4 animate-in fade-in duration-500">
         <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
+            <div 
+                className="flex items-center gap-2 cursor-pointer select-none"
+                onClick={() => setIsAssetsExpanded(!isAssetsExpanded)}
+            >
+                {isAssetsExpanded ? <ChevronDown className="h-6 w-6 text-slate-600" /> : <ChevronRight className="h-6 w-6 text-slate-600" />}
                 <div className="p-2 bg-orange-100 rounded-lg">
                     <Package className="w-6 h-6 text-orange-600" />
                 </div>
@@ -898,6 +918,8 @@ export default function Dashboard() {
             </Button>
         </div>
 
+        {isAssetsExpanded && (
+        <>
         <div className="grid md:grid-cols-3 gap-6">
             <div className="md:col-span-2 space-y-6">
                 <div className="grid md:grid-cols-2 gap-6">
@@ -1017,8 +1039,25 @@ export default function Dashboard() {
             </Card>
             </div>
         </div>
+        </>
+        )}
 
-        {/* Tabela e Gráficos por Classe */}
+        {/* Seção de Tabelas */}
+        <div className="space-y-6">
+            <div 
+                className="flex items-center gap-2 cursor-pointer select-none" 
+                onClick={() => setIsTablesExpanded(!isTablesExpanded)}
+            >
+                {isTablesExpanded ? <ChevronDown className="h-6 w-6 text-slate-600" /> : <ChevronRight className="h-6 w-6 text-slate-600" />}
+                <div className="flex items-center gap-2">
+                    <div className="p-2 bg-teal-100 rounded-lg">
+                        <FileText className="w-6 h-6 text-teal-600" />
+                    </div>
+                    <h2 className="text-xl font-semibold text-slate-700">Relatórios Detalhados</h2>
+                </div>
+            </div>
+            {isTablesExpanded && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-top-4 duration-300">
         <Card>
             <CardHeader className="pb-2">
                 <CardTitle className="text-lg font-semibold text-slate-700">Análise por Classe Contábil</CardTitle>
@@ -1156,6 +1195,252 @@ export default function Dashboard() {
                 </div>
             </CardContent>
         </Card>
+            </div>
+            )}
+        </div>
+
+        {/* Seção de Dados de Inventário */}
+        <div className="space-y-6">
+            <div 
+                className="flex items-center gap-2 cursor-pointer select-none"
+                onClick={() => setIsInventoryDataExpanded(!isInventoryDataExpanded)}
+            >
+                {isInventoryDataExpanded ? <ChevronDown className="h-6 w-6 text-slate-600" /> : <ChevronRight className="h-6 w-6 text-slate-600" />}
+                <div className="flex items-center gap-2">
+                    <div className="p-2 bg-blue-100 rounded-lg">
+                        <ClipboardList className="w-6 h-6 text-blue-600" />
+                    </div>
+                    <h2 className="text-xl font-semibold text-slate-700">Dados de Inventário</h2>
+                </div>
+            </div>
+            
+            {isInventoryDataExpanded && (
+            <div className="grid md:grid-cols-4 gap-4 animate-in fade-in slide-in-from-top-4 duration-300">
+                <Card className="border-l-4 border-l-blue-500 shadow-sm py-3 gap-1">
+                    <CardHeader className="pb-0">
+                        <CardTitle className="text-base font-medium text-slate-500 flex justify-between">
+                            Total Agendamentos
+                            <Calendar className="h-4 w-4 text-blue-500" />
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="text-3xl font-bold text-slate-800">{totalSchedules}</div>
+                        <p className="text-sm text-muted-foreground mt-1">Ciclos registrados</p>
+                    </CardContent>
+                </Card>
+                <Card className="border-l-4 border-l-green-500 shadow-sm py-3 gap-1">
+                    <CardHeader className="pb-0">
+                        <CardTitle className="text-base font-medium text-slate-500 flex justify-between">
+                            Concluídos
+                            <CheckCircle2 className="h-4 w-4 text-green-500" />
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="text-3xl font-bold text-slate-800">{completedSchedules}</div>
+                        <div className="flex items-center gap-2 mt-1">
+                            <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+                                <div className="h-full bg-green-500" style={{ width: `${inventoryCompletionRate}%` }} />
+                            </div>
+                            <span className="text-sm font-bold text-green-600">{inventoryCompletionRate.toFixed(0)}%</span>
+                        </div>
+                    </CardContent>
+                </Card>
+                <Card className="border-l-4 border-l-orange-500 shadow-sm py-3 gap-1">
+                    <CardHeader className="pb-0">
+                        <CardTitle className="text-base font-medium text-slate-500 flex justify-between">
+                            Pendentes
+                            <Clock className="h-4 w-4 text-orange-500" />
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="text-3xl font-bold text-slate-800">{pendingSchedules}</div>
+                        <p className="text-sm text-muted-foreground mt-1">Aguardando execução</p>
+                    </CardContent>
+                </Card>
+                <Card className="border-l-4 border-l-purple-500 shadow-sm py-3 gap-1">
+                    <CardHeader className="pb-0">
+                        <CardTitle className="text-base font-medium text-slate-500 flex justify-between">
+                            Em Aprovação
+                            <Activity className="h-4 w-4 text-purple-500" />
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="text-3xl font-bold text-slate-800">{waitingApprovalSchedules}</div>
+                        <p className="text-sm text-muted-foreground mt-1">Aguardando validação</p>
+                    </CardContent>
+                </Card>
+            </div>
+            )}
+        </div>
+
+        {/* Seção de Análise de Cronograma e Agendamentos */}
+        <div className="space-y-6">
+            <div 
+                className="flex items-center gap-2 cursor-pointer select-none"
+                onClick={() => setIsScheduleAnalysisExpanded(!isScheduleAnalysisExpanded)}
+            >
+                {isScheduleAnalysisExpanded ? <ChevronDown className="h-6 w-6 text-slate-600" /> : <ChevronRight className="h-6 w-6 text-slate-600" />}
+                <div className="flex items-center gap-2">
+                    <div className="p-2 bg-purple-100 rounded-lg">
+                        <Calendar className="w-6 h-6 text-purple-600" />
+                    </div>
+                    <h2 className="text-xl font-semibold text-slate-700">Análise de Cronograma e Agendamentos</h2>
+                </div>
+            </div>
+
+            {isScheduleAnalysisExpanded && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-top-4 duration-300">
+                <div className="grid md:grid-cols-2 gap-6">
+                {/* Gráfico de Agendamentos por Mês */}
+                <Card>
+                    <CardHeader className="pb-2">
+                        <CardTitle className="text-lg font-semibold text-slate-700">Agendamentos por Mês ({new Date().getFullYear()})</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="h-[300px] w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart
+                                    data={(() => {
+                                        const currentYear = new Date().getFullYear();
+                                        const months = Array.from({ length: 12 }, (_, i) => i);
+                                        return months.map(monthIndex => {
+                                            const monthName = new Date(currentYear, monthIndex, 1).toLocaleString('pt-BR', { month: 'short' });
+                                            const count = schedules.filter(s => {
+                                                const d = parseDate(s.date);
+                                                return d.getFullYear() === currentYear && d.getMonth() === monthIndex;
+                                            }).length;
+                                            return { name: monthName.charAt(0).toUpperCase() + monthName.slice(1), value: count };
+                                        });
+                                    })()}
+                                    margin={{ top: 20, right: 30, left: 0, bottom: 5 }}
+                                >
+                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />
+                                    <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} allowDecimals={false} />
+                                    <RechartsTooltip 
+                                        cursor={{ fill: '#f1f5f9' }}
+                                        contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                                    />
+                                    <Bar dataKey="value" name="Agendamentos" fill="#8b5cf6" radius={[4, 4, 0, 0]}>
+                                        <LabelList dataKey="value" position="top" style={{ fill: '#64748b', fontSize: 12 }} formatter={(val: number) => val > 0 ? val : ''} />
+                                    </Bar>
+                                </BarChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </CardContent>
+                </Card>
+
+                {/* Gráfico de Status dos Agendamentos */}
+                <Card>
+                    <CardHeader className="pb-2">
+                        <CardTitle className="text-lg font-semibold text-slate-700">Status dos Agendamentos</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="h-[300px] w-full relative">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <PieChart>
+                                    <Pie
+                                        data={[
+                                            { name: 'Concluído', value: completedSchedules, color: '#22c55e' },
+                                            { name: 'Pendente', value: pendingSchedules, color: '#f97316' },
+                                            { name: 'Em Aprovação', value: waitingApprovalSchedules, color: '#a855f7' }
+                                        ].filter(d => d.value > 0)}
+                                        cx="50%"
+                                        cy="50%"
+                                        innerRadius={60}
+                                        outerRadius={80}
+                                        paddingAngle={5}
+                                        dataKey="value"
+                                    >
+                                        {([
+                                            { name: 'Concluído', value: completedSchedules, color: '#22c55e' },
+                                            { name: 'Pendente', value: pendingSchedules, color: '#f97316' },
+                                            { name: 'Em Aprovação', value: waitingApprovalSchedules, color: '#a855f7' }
+                                        ].filter(d => d.value > 0)).map((entry, index) => (
+                                            <Cell key={`cell-${index}`} fill={entry.color} />
+                                        ))}
+                                    </Pie>
+                                    <RechartsTooltip />
+                                    <Legend verticalAlign="bottom" height={36}/>
+                                </PieChart>
+                            </ResponsiveContainer>
+                            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none">
+                                <span className="text-3xl font-bold text-slate-700">{totalSchedules}</span>
+                                <span className="block text-xs text-slate-500 uppercase font-medium">Total</span>
+                            </div>
+                        </div>
+                    </CardContent>
+                </Card>
+            </div>
+
+            {/* Propostas de Cronograma */}
+            <Card className="bg-slate-50 border-slate-200">
+                <CardHeader className="pb-2">
+                    <CardTitle className="text-lg font-semibold text-slate-700 flex items-center gap-2">
+                        <Clock className="h-5 w-5 text-slate-500" />
+                        Sugestões de Cronograma (Ativos não verificados há +1 ano)
+                    </CardTitle>
+                </CardHeader>
+                <CardContent>
+                    <div className="space-y-2">
+                        {(() => {
+                            const oneYearAgo = new Date();
+                            oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+                            
+                            const outdatedAssets = assets?.filter(a => {
+                                // Considera concluídos e que não estão em agendamentos pendentes
+                                if (a.status !== 'concluido') return false;
+                                const isScheduled = schedules.some(s => s.status !== 'completed' && s.assetIds.includes(a.id));
+                                if (isScheduled) return false;
+
+                                // Verifica última data de inventário
+                                const lastInventory = schedules
+                                    .filter(s => s.status === 'completed' && s.assetIds.includes(a.id))
+                                    .sort((a, b) => parseDate(b.date).getTime() - parseDate(a.date).getTime())[0];
+                                
+                                if (!lastInventory) return true; // Nunca inventariado
+                                return parseDate(lastInventory.date) < oneYearAgo;
+                            }) || [];
+
+                            if (outdatedAssets.length === 0) {
+                                return <p className="text-sm text-slate-500 italic">Nenhum ativo requer atenção imediata.</p>;
+                            }
+
+                            // Agrupa por Centro de Custo para sugestão
+                            const suggestions = Object.entries(outdatedAssets.reduce((acc, asset) => {
+                                const cc = typeof asset.costCenter === 'object' ? (asset.costCenter as any).code : asset.costCenter || "Sem CC";
+                                if (!acc[cc]) acc[cc] = 0;
+                                acc[cc]++;
+                                return acc;
+                            }, {} as Record<string, number>))
+                            .sort((a, b) => b[1] - a[1])
+                            .slice(0, 3); // Top 3 sugestões
+
+                            return (
+                                <div className="grid md:grid-cols-3 gap-4">
+                                    {suggestions.map(([cc, count]) => (
+                                        <div key={cc} className="bg-white p-3 rounded border border-slate-200 shadow-sm flex justify-between items-center">
+                                            <div>
+                                                <p className="font-medium text-slate-700">{cc}</p>
+                                                <p className="text-xs text-slate-500">{count} ativos pendentes</p>
+                                            </div>
+                                            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => {
+                                                // Aqui poderia abrir o modal de agendamento pré-filtrado
+                                                setShowAssetsModal(true); 
+                                            }}>
+                                                Agendar
+                                            </Button>
+                                        </div>
+                                    ))}
+                                </div>
+                            );
+                        })()}
+                    </div>
+                </CardContent>
+            </Card>
+            </div>
+            )}
+        </div>
 
         {/* Modal de Detalhes dos Ativos em Andamento */}
         {showAssetsModal && (
