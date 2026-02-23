@@ -78,9 +78,19 @@ export default function Dashboard() {
     };
   }, []);
 
-  const getLocalDateFromISO = (isoString: string) => {
-    if (!isoString) return new Date();
-    // Handle YYYY-MM-DD string manually to avoid timezone issues
+  const getLocalDateFromISO = (value: any) => {
+    if (!value) return new Date();
+
+    if (typeof value.toDate === 'function') {
+        const date = value.toDate();
+        return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    }
+
+    if (value instanceof Date) {
+        return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+    }
+
+    const isoString = String(value);
     if (isoString.length === 10 && isoString.includes('-')) {
         const [y, m, d] = isoString.split('-').map(Number);
         return new Date(y, m - 1, d);

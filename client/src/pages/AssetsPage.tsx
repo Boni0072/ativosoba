@@ -121,6 +121,18 @@ export default function AssetsPage() {
     setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }));
   };
 
+  const getLocalDateFromISO = (value: any) => {
+    if (!value) return null;
+    if (typeof value.toDate === 'function') return value.toDate();
+    if (value instanceof Date) return value;
+    const isoString = String(value);
+    if (isoString.length === 10 && isoString.includes('-')) {
+        const [y, m, d] = isoString.split('-').map(Number);
+        return new Date(y, m - 1, d);
+    }
+    return new Date(isoString);
+  };
+
   const handleView = (asset: any) => {
     setViewingAsset(asset);
     setViewOpen(true);
@@ -139,7 +151,8 @@ export default function AssetsPage() {
   const handleEdit = (asset: any) => {
     let formattedDate = "";
     try {
-      formattedDate = asset.startDate ? new Date(asset.startDate).toISOString().split("T")[0] : new Date().toISOString().split("T")[0];
+      const date = getLocalDateFromISO(asset.startDate);
+      formattedDate = date ? date.toISOString().split("T")[0] : new Date().toISOString().split("T")[0];
     } catch (e) {
       formattedDate = new Date().toISOString().split("T")[0];
     }
@@ -748,7 +761,8 @@ export default function AssetsPage() {
 
                     const calculateDepreciation = (life: any, useStored = false) => {
                       const years = Number(life || 0);
-                      if (years <= 0 || !viewingAsset.startDate) return { monthly: 0, accumulated: 0, residual: totalAssetValue, monthsAccumulated: 0, totalMonths: 0 };
+                      const assetDate = getLocalDateFromISO(viewingAsset.startDate);
+                      if (years <= 0 || !assetDate) return { monthly: 0, accumulated: 0, residual: totalAssetValue, monthsAccumulated: 0, totalMonths: 0 };
                       const totalMonths = years * 12;
                       const monthly = totalAssetValue / totalMonths;
                       
@@ -759,7 +773,6 @@ export default function AssetsPage() {
                           accumulated = Number(viewingAsset.accumulatedDepreciation);
                           monthsAccumulated = monthly > 0 ? Math.round(accumulated / monthly) : 0;
                       } else {
-                          const assetDate = new Date(viewingAsset.startDate);
                           const start = new Date(assetDate.getFullYear(), assetDate.getMonth() + 1, 1);
                           const now = new Date();
                           let months = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
@@ -786,7 +799,10 @@ export default function AssetsPage() {
                 <div className="col-span-1 space-y-1">
                   <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Data Início</label>
                   <p className="text-base">
-                    {viewingAsset.startDate ? new Date(viewingAsset.startDate).toLocaleDateString("pt-BR") : "-"}
+                    {(() => {
+                        const d = getLocalDateFromISO(viewingAsset.startDate);
+                        return d ? d.toLocaleDateString("pt-BR") : "-";
+                    })()}
                   </p>
                 </div>
                 <div className="col-span-1 space-y-1">
@@ -998,7 +1014,7 @@ export default function AssetsPage() {
                       const fiscalLife = Number(viewingAsset.usefulLife) || Number(assetClassDef?.usefulLife) || 0;
                       const corporateLife = Number(viewingAsset.corporateUsefulLife) || Number(assetClassDef?.corporateUsefulLife) || 0;
 
-                      const startDate = viewingAsset.startDate ? new Date(viewingAsset.startDate) : null;
+                      const startDate = getLocalDateFromISO(viewingAsset.startDate);
                       const currentYear = new Date().getFullYear();
                       
                       if (!startDate || totalValue <= 0) {
@@ -1042,10 +1058,12 @@ export default function AssetsPage() {
 
                             let isDepreciated = false;
                             if (viewingAsset.lastDepreciationDate) {
-                                const lastRun = new Date(viewingAsset.lastDepreciationDate);
+                                const lastRun = getLocalDateFromISO(viewingAsset.lastDepreciationDate);
+                                if (lastRun) {
                                 const rowYearMonth = currentYear * 12 + i;
                                 const lastRunYearMonth = lastRun.getFullYear() * 12 + lastRun.getMonth();
                                 if (rowYearMonth <= lastRunYearMonth) isDepreciated = true;
+                                }
                             }
                             
                             return {
@@ -1381,7 +1399,10 @@ export default function AssetsPage() {
                           R$ {getAssetValue(asset).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </TableCell>
                         <TableCell className="text-base">
-                          {asset.startDate ? new Date(asset.startDate).toLocaleDateString("pt-BR") : "-"}
+                          {(() => {
+                              const d = getLocalDateFromISO(asset.startDate);
+                              return d ? d.toLocaleDateString("pt-BR") : "-";
+                          })()}
                         </TableCell>
                         <TableCell onClick={(e) => e.stopPropagation()}>
                           <Select value={asset.status} onValueChange={(v) => handleStatusChange(asset, v)}>
