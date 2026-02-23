@@ -76,7 +76,24 @@ const getLocalDateFromISO = (value: any) => {
 };
 
 export default function ReportsPage() {
-  const { user } = useAuth();
+  const { user: authUser } = useAuth();
+  const [user, setUser] = useState<any>(authUser);
+
+  useEffect(() => {
+    if (authUser) {
+      setUser(authUser);
+    } else {
+      const storedUser = localStorage.getItem("obras_user");
+      if (storedUser) {
+        try {
+          setUser(JSON.parse(storedUser));
+        } catch (e) {
+          console.error("Erro ao recuperar usuário do storage", e);
+        }
+      }
+    }
+  }, [authUser]);
+
   const [schedules, setSchedules] = useState<InventorySchedule[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [statusHistory, setStatusHistory] = useState<any[]>([]);
