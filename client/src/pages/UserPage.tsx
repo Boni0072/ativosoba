@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Loader2, Pencil, Plus, Trash2, Shield, AlertTriangle, Download, Upload, Mail } from "lucide-react";
+import { Loader2, Pencil, Plus, Trash2, Shield, AlertTriangle, Download, Upload, Mail, Search } from "lucide-react";
 import { toast } from "sonner";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -38,6 +38,7 @@ export const AVAILABLE_PAGES = [
 export default function UserPage() {
   const [users, setUsers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState("");
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "users"), (snapshot) => {
@@ -330,6 +331,11 @@ Equipe de Obras`;
     reader.readAsArrayBuffer(file);
   };
 
+  const filteredUsers = users.filter(user => 
+    (user.name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (user.email || "").toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -481,8 +487,17 @@ Equipe de Obras`;
       </div>
 
       <Card className="p-0 overflow-hidden">
-        <div className="p-6 border-b">
+        <div className="p-6 border-b flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <h2 className="text-lg font-semibold">Usuários Cadastrados</h2>
+          <div className="relative w-full sm:w-72">
+            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Buscar por nome ou email..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-8"
+            />
+          </div>
         </div>
         {isLoading ? (
           <div className="flex justify-center p-8">
@@ -501,7 +516,7 @@ Equipe de Obras`;
               </TableRow>
             </TableHeader>
             <TableBody>
-              {users?.map((user: any) => (
+              {filteredUsers?.map((user: any) => (
                 <TableRow key={user.id}>
                   <TableCell className="font-medium">{user.name}</TableCell>
                   <TableCell>{user.email}</TableCell>
@@ -561,9 +576,9 @@ Equipe de Obras`;
                   </TableCell>
                 </TableRow>
               ))}
-              {(!users || users.length === 0) && (
+              {(!filteredUsers || filteredUsers.length === 0) && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                     Nenhum usuário encontrado.
                   </TableCell>
                 </TableRow>
