@@ -194,7 +194,17 @@ export default function ReportsPage() {
   const schedulesByDate = useMemo(() => {
     const groups: Record<string, InventorySchedule[]> = {};
     completedSchedules.forEach(schedule => {
-      const dateKey = schedule.date.includes('T') ? schedule.date.split('T')[0] : schedule.date;
+      let dateKey = "";
+      const val = schedule.date as any;
+      if (val?.toDate) {
+         const d = val.toDate();
+         dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      } else if (val instanceof Date) {
+         dateKey = `${val.getFullYear()}-${String(val.getMonth() + 1).padStart(2, '0')}-${String(val.getDate()).padStart(2, '0')}`;
+      } else {
+         const str = String(val);
+         dateKey = str.includes('T') ? str.split('T')[0] : str;
+      }
       if (!groups[dateKey]) {
         groups[dateKey] = [];
       }
@@ -741,7 +751,7 @@ export default function ReportsPage() {
                     <div className="flex items-center gap-2 mb-2">
                       <CalendarIcon className="h-5 w-5 text-blue-600" />
                       <span className="font-medium text-slate-800 text-lg">
-                        Realizado em: {new Date(schedule.date).toLocaleDateString()}
+                        Realizado em: {getLocalDateFromISO(schedule.date).toLocaleDateString()}
                       </span>
                     </div>
                     <div className="text-lg text-slate-600 mb-2">

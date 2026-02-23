@@ -251,7 +251,12 @@ export default function AssetInventoryPage() {
 
   const completedSchedules = schedules
     .filter(s => s.status === 'completed')
-    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    .sort((a, b) => {
+        const getDate = (d: any) => d?.toDate ? d.toDate() : new Date(d);
+        const dateA = a.approvedAt ? new Date(a.approvedAt).getTime() : getDate(a.date).getTime();
+        const dateB = b.approvedAt ? new Date(b.approvedAt).getTime() : getDate(b.date).getTime();
+        return dateB - dateA;
+    });
 
   const handleApproveInventory = async (schedule: InventorySchedule) => {
     try {
@@ -643,7 +648,8 @@ export default function AssetInventoryPage() {
         
         doc.setFontSize(10);
         doc.setTextColor(80);
-        doc.text(`Data do Inventário: ${new Date(schedule.date).toLocaleDateString('pt-BR')}`, pageWidth - 14, 24, { align: 'right' });
+        const dateObj = (schedule.date as any)?.toDate ? (schedule.date as any).toDate() : new Date(schedule.date);
+        doc.text(`Data do Inventário: ${dateObj.toLocaleDateString('pt-BR')}`, pageWidth - 14, 24, { align: 'right' });
         doc.text(`Aprovado Por: ${schedule.approvedBy || "-"}`, pageWidth - 14, 29, { align: 'right' });
         doc.text(`Data Aprovação: ${schedule.approvedAt ? new Date(schedule.approvedAt).toLocaleString('pt-BR') : "-"}`, pageWidth - 14, 34, { align: 'right' });
 
@@ -672,7 +678,7 @@ export default function AssetInventoryPage() {
         margin: { top: 45 }
       });
 
-      doc.save(`inventario_concluido_${schedule.date}.pdf`);
+      doc.save(`inventario_concluido_${dateObj.toISOString().split('T')[0]}.pdf`);
       toast.success("Relatório PDF gerado com sucesso!");
     } catch (error) {
       console.error("Erro ao gerar PDF:", error);
@@ -826,7 +832,10 @@ export default function AssetInventoryPage() {
               {myPendingSchedules.map(schedule => (
                 <div key={schedule.id} className="flex items-center justify-between bg-white p-3 rounded-md border border-orange-100 shadow-sm">
                   <div>
-                    <p className="text-base font-medium text-slate-700">Agendado para: {new Date(schedule.date).toLocaleDateString('pt-BR')}</p>
+                    <p className="text-base font-medium text-slate-700">Agendado para: {(() => {
+                        const d = (schedule.date as any)?.toDate ? (schedule.date as any).toDate() : new Date(schedule.date);
+                        return d.toLocaleDateString('pt-BR');
+                    })()}</p>
                     <p className="text-sm text-slate-500">{schedule.assetIds.length} ativos para conferir</p>
                     {schedule.notes && <p className="text-sm text-slate-500 italic mt-1">"{schedule.notes}"</p>}
                   </div>
@@ -986,7 +995,10 @@ export default function AssetInventoryPage() {
                               <span className="text-xs text-muted-foreground">
                                 {lastInventory.approvedAt 
                                   ? new Date(lastInventory.approvedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
-                                  : new Date(lastInventory.date).toLocaleDateString('pt-BR')}
+                                  : (() => {
+                                      const d = (lastInventory.date as any)?.toDate ? (lastInventory.date as any).toDate() : new Date(lastInventory.date);
+                                      return d.toLocaleDateString('pt-BR');
+                                    })()}
                               </span>
                             </div>
                           );
@@ -1009,7 +1021,10 @@ export default function AssetInventoryPage() {
                             );
                           })}
                           <span className="text-sm text-muted-foreground mt-0.5">
-                            {new Date(activeSchedule.date).toLocaleDateString('pt-BR')}
+                            {(() => {
+                                const d = (activeSchedule.date as any)?.toDate ? (activeSchedule.date as any).toDate() : new Date(activeSchedule.date);
+                                return d.toLocaleDateString('pt-BR');
+                            })()}
                           </span>
                         </div>
                       ) : (
@@ -1094,7 +1109,12 @@ export default function AssetInventoryPage() {
             <TableBody>
               {completedSchedules.map(schedule => (
                 <TableRow key={schedule.id}>
-                  <TableCell className="text-lg">{new Date(schedule.date).toLocaleDateString('pt-BR')}</TableCell>
+                  <TableCell className="text-lg">
+                    {(() => {
+                        const d = (schedule.date as any)?.toDate ? (schedule.date as any).toDate() : new Date(schedule.date);
+                        return d.toLocaleDateString('pt-BR');
+                    })()}
+                  </TableCell>
                   <TableCell>
                     <div className="flex flex-col gap-1">
                       {schedule.userIds.map(uid => {
