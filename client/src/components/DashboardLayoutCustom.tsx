@@ -230,7 +230,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   return (
     <div className="flex h-screen bg-background">
       {/* Sidebar */}
-      <div className={`${sidebarOpen ? 'w-64' : 'w-20'} bg-[#0b543e] text-white transition-all duration-300 flex flex-col border-r border-[#a5b3c4]`}>
+      <div className={`${sidebarOpen ? 'w-64' : 'w-0'} bg-[#0b543e] text-white transition-all duration-300 flex flex-col border-r border-[#a5b3c4] overflow-hidden`}>
         {/* Logo */}
         <div className="p-4 border-b border-[#a5b3c4] flex items-center justify-center relative">
           {sidebarOpen && (
@@ -372,7 +372,14 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         </Dialog>
         {/* Header */}
         <header className="bg-white border-b border-border px-6 py-4 shadow-sm flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-slate-700">Sistema de Gestão de Obras</h1>
+          <div className="flex items-center gap-4">
+            {!sidebarOpen && (
+              <button onClick={() => setSidebarOpen(true)} className="p-2 hover:bg-slate-100 rounded-full transition-colors">
+                <Menu size={24} className="text-slate-700" />
+              </button>
+            )}
+            <h1 className="text-2xl font-bold text-slate-700">Sistema de Gestão de Obras</h1>
+          </div>
           <div className="flex items-center gap-4">
             
             {/* Notifications */}
