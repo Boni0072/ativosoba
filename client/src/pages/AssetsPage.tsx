@@ -52,6 +52,7 @@ export default function AssetsPage() {
 
   const [assets, setAssets] = useState<any[]>([]);
   const [expenses, setExpenses] = useState<any[]>([]);
+  const [assetClasses, setAssetClasses] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -71,6 +72,14 @@ export default function AssetsPage() {
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "asset_classes"), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setAssetClasses(data);
+    });
+    return () => unsubscribe();
+  }, []);
+
   // Sync viewingAsset with real-time assets data to reflect depreciation updates
   useEffect(() => {
     if (viewOpen && viewingAsset) {
@@ -82,7 +91,6 @@ export default function AssetsPage() {
   }, [assets, viewOpen, viewingAsset]);
 
   const { data: accountingAccounts } = trpc.accounting.listAccounts.useQuery();
-  const { data: assetClasses } = trpc.accounting.listAssetClasses.useQuery();
   const { data: costCenters } = trpc.accounting.listCostCenters.useQuery();
 
   const updateExpenseMutation = trpc.expenses.update.useMutation();
@@ -865,7 +873,11 @@ export default function AssetsPage() {
                     <h4 className="font-medium text-base text-gray-900 border-b pb-2 mb-3 flex justify-between items-center">
                         <span>Cenário Fiscal ({effectiveUsefulLife} anos)</span>
                         <span className="text-xs text-muted-foreground font-normal">
-                            {effectiveUsefulLife} * 12 = {effectiveUsefulLife * 12} meses | R$ {totalAssetValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / {effectiveUsefulLife * 12} = R$ {fiscal.monthly.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            {effectiveUsefulLife > 0 ? (
+                                `${effectiveUsefulLife} * 12 = ${effectiveUsefulLife * 12} meses | R$ ${totalAssetValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / ${effectiveUsefulLife * 12} = R$ ${fiscal.monthly.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                            ) : (
+                                "Vida útil não definida"
+                            )}
                         </span>
                     </h4>
                     <div className="grid grid-cols-3 gap-4">
@@ -893,7 +905,11 @@ export default function AssetsPage() {
                     <h4 className="font-medium text-base text-gray-900 border-b pb-2 mb-3 flex justify-between items-center">
                         <span>Cenário Societário ({effectiveCorporateLife} anos)</span>
                         <span className="text-xs text-muted-foreground font-normal">
-                            {effectiveCorporateLife} * 12 = {effectiveCorporateLife * 12} meses | R$ {totalAssetValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / {effectiveCorporateLife * 12} = R$ {corporate.monthly.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            {effectiveCorporateLife > 0 ? (
+                                `${effectiveCorporateLife} * 12 = ${effectiveCorporateLife * 12} meses | R$ ${totalAssetValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / ${effectiveCorporateLife * 12} = R$ ${corporate.monthly.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                            ) : (
+                                "Vida útil não definida"
+                            )}
                         </span>
                     </h4>
                     <div className="grid grid-cols-3 gap-4">
@@ -945,42 +961,55 @@ export default function AssetsPage() {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {getAssetExpenses(viewingAsset).length > 0 ? (
-                            getAssetExpenses(viewingAsset).map((item: any) => (
-                              <TableRow key={item.id}>
-                                <TableCell className="text-base">{item.description || "Sem descrição"}</TableCell>
-                                <TableCell className="text-base">{projects?.find(p => String(p.id) === String(item.projectId))?.name || "-"}</TableCell>
-                                <TableCell className="text-base font-mono text-muted-foreground">
-                                  {
-                                    item.notes?.match(/NF-e:\s*(\d{44})/)?.[1] || 
-                                    "-"
-                                  }
-                                </TableCell>
-                                <TableCell className="text-base">
-                                  <span className={`inline-flex items-center px-2 py-0.5 rounded text-sm font-medium ${
-                                    item.type === 'capex' ? 'bg-blue-100 text-blue-800' : 
-                                    item.type === 'opex' ? 'bg-yellow-100 text-yellow-800' : 
-                                    'bg-gray-100 text-gray-800'
-                                  }`}>
-                                    {item.type || "-"}
-                                  </span>
-                                </TableCell>
-                                <TableCell className="text-right text-base">
-                                  R$ {Number(item.amount || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                </TableCell>
-                                <TableCell className="text-right">
-                                  <Button 
-                                    variant="ghost" 
-                                    size="icon" 
-                                    className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
-                                    onClick={() => handleUnlinkItem(item.id)}
-                                  >
-                                    <Trash2 className="w-4 h-4" />
-                                  </Button>
-                                </TableCell>
-                              </TableRow>
-                            ))
-                          ) : (
+                          {Number(viewingAsset.value) > 0 && (
+                            <TableRow className="bg-slate-50/50">
+                              <TableCell className="text-base font-medium text-slate-700">Valor Original (Cadastro)</TableCell>
+                              <TableCell className="text-base text-muted-foreground">-</TableCell>
+                              <TableCell className="text-base text-muted-foreground">-</TableCell>
+                              <TableCell className="text-base text-muted-foreground">-</TableCell>
+                              <TableCell className="text-right text-base font-medium">
+                                R$ {Number(viewingAsset.value).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <span className="text-xs text-muted-foreground bg-slate-100 px-2 py-1 rounded border">Saldo Inicial</span>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                          {getAssetExpenses(viewingAsset).map((item: any) => (
+                            <TableRow key={item.id}>
+                              <TableCell className="text-base">{item.description || "Sem descrição"}</TableCell>
+                              <TableCell className="text-base">{projects?.find(p => String(p.id) === String(item.projectId))?.name || "-"}</TableCell>
+                              <TableCell className="text-base font-mono text-muted-foreground">
+                                {
+                                  item.notes?.match(/NF-e:\s*(\d{44})/)?.[1] || 
+                                  "-"
+                                }
+                              </TableCell>
+                              <TableCell className="text-base">
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded text-sm font-medium ${
+                                  item.type === 'capex' ? 'bg-blue-100 text-blue-800' : 
+                                  item.type === 'opex' ? 'bg-yellow-100 text-yellow-800' : 
+                                  'bg-gray-100 text-gray-800'
+                                }`}>
+                                  {item.type || "-"}
+                                </span>
+                              </TableCell>
+                              <TableCell className="text-right text-base">
+                                R$ {Number(item.amount || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <Button 
+                                  variant="ghost" 
+                                  size="icon" 
+                                  className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
+                                  onClick={() => handleUnlinkItem(item.id)}
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                          {Number(viewingAsset.value) <= 0 && getAssetExpenses(viewingAsset).length === 0 && (
                             <TableRow>
                               <TableCell colSpan={6} className="text-center text-base text-muted-foreground py-6">
                                 Nenhuma despesa vinculada a este ativo.
