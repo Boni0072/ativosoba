@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { db } from "@/lib/firebase";
 import { collection, onSnapshot, addDoc, updateDoc, doc, query, orderBy } from "firebase/firestore";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,24 @@ import { Link } from "wouter";
 import * as XLSX from "xlsx";
 
 export default function AssetMovementsPage() {
+  const { user: authUser } = useAuth();
+  const [user, setUser] = useState<any>(authUser);
+
+  useEffect(() => {
+    if (authUser) {
+      setUser(authUser);
+    } else {
+      const storedUser = localStorage.getItem("obras_user");
+      if (storedUser) {
+        try {
+          setUser(JSON.parse(storedUser));
+        } catch (e) {
+          console.error("Erro ao recuperar usuário do storage", e);
+        }
+      }
+    }
+  }, [authUser]);
+
   const [assets, setAssets] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
   const [movements, setMovements] = useState<any[]>([]);
@@ -112,6 +131,7 @@ export default function AssetMovementsPage() {
       originCostCenter: typeof asset.costCenter === 'object' ? asset.costCenter.code : asset.costCenter || null,
       movementCategory: movementType?.type || "other",
       createdAt: new Date().toISOString(),
+      performedBy: user?.name || "Sistema",
     };
 
     try {
@@ -186,7 +206,8 @@ export default function AssetMovementsPage() {
         "Origem": origin,
         "Destino": destination,
         "Valor (R$)": m.value ? Number(m.value) : 0,
-        "Justificativa": m.reason || ""
+        "Justificativa": m.reason || "",
+        "Responsável": m.performedBy || "-"
       };
     });
 
@@ -382,6 +403,7 @@ export default function AssetMovementsPage() {
                 <TableHead>Tipo</TableHead>
                 <TableHead>Origem</TableHead>
                 <TableHead>Destino / Detalhes</TableHead>
+                <TableHead>Responsável</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -440,6 +462,9 @@ export default function AssetMovementsPage() {
                             {movement.reason && <span className="text-xs text-gray-500 italic">{movement.reason}</span>}
                           </div>
                         )}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {movement.performedBy || "-"}
                       </TableCell>
                     </TableRow>
                   );
