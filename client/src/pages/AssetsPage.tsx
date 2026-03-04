@@ -381,9 +381,9 @@ export default function AssetsPage() {
       "Descrição",
       "Valor",
       "Quantidade",
-      "Data Início (AAAA-MM-DD)",
+      "Data Início (DD/MM/AAAA)",
       "Centro de Custo (Código)",
-      "Classe do Ativo",
+      "Código da Classe",
       "Nome da Obra"
     ];
     const example = [
@@ -393,9 +393,9 @@ export default function AssetsPage() {
       "Betoneira para obra",
       "2500.00",
       "1",
-      new Date().toISOString().split('T')[0],
+      "04/03/2026",
       "CC-001",
-      "Máquinas e Equipamentos",
+      "3.01.01",
       "Obra Residencial"
     ];
     
@@ -416,7 +416,7 @@ export default function AssetsPage() {
     reader.onload = async (e) => {
       try {
         const data = e.target?.result;
-        const workbook = XLSX.read(data, { type: 'array' });
+        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         const json = XLSX.utils.sheet_to_json(worksheet);
@@ -435,6 +435,28 @@ export default function AssetsPage() {
 
              if (!projectId) return;
 
+             const assetClassCode = row["Código da Classe"];
+             let assetClass = "";
+             if (assetClassCode) {
+                 const found = assetClasses.find(c => c.code == assetClassCode);
+                 assetClass = found ? found.name : String(assetClassCode);
+             }
+
+             const parseDate = (val: any) => {
+                 if (!val) return new Date().toISOString();
+                 if (val instanceof Date) return val.toISOString();
+                 if (typeof val === 'string') {
+                     if (val.includes('/')) {
+                         const [day, month, year] = val.split('/');
+                         const d = new Date(`${year}-${month}-${day}`);
+                         if (!isNaN(d.getTime())) return d.toISOString();
+                     }
+                     const d = new Date(val);
+                     if (!isNaN(d.getTime())) return d.toISOString();
+                 }
+                 return new Date().toISOString();
+             };
+
              const payload = {
                 projectId,
                 assetNumber: row["Número do Ativo"] ? String(row["Número do Ativo"]) : "",
@@ -443,9 +465,9 @@ export default function AssetsPage() {
                 description: row["Descrição"] || "",
                 value: row["Valor"] ? Number(row["Valor"]) : 0,
                 quantity: row["Quantidade"] ? Number(row["Quantidade"]) : 1,
-                startDate: row["Data Início (AAAA-MM-DD)"] ? new Date(row["Data Início (AAAA-MM-DD)"]).toISOString() : new Date().toISOString(),
+                startDate: parseDate(row["Data Início (DD/MM/AAAA)"]),
                 costCenter: row["Centro de Custo (Código)"] || "",
-                assetClass: row["Classe do Ativo"] || "",
+                assetClass: assetClass,
                 status: "planejamento",
                 createdAt: new Date().toISOString()
              };

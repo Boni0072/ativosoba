@@ -87,6 +87,7 @@ export default function AssetMovementsPage() {
     destinationProjectId: "",
     destinationCostCenter: "",
     value: "",
+    percentage: "",
     reason: "",
   });
 
@@ -97,6 +98,7 @@ export default function AssetMovementsPage() {
     { value: "write_off_obsolescence", label: "Baixa por Obsolescência", type: "write_off" },
     { value: "write_off_theft", label: "Baixa por Roubo/Furto", type: "write_off" },
     { value: "write_off_damage", label: "Baixa por Danos", type: "write_off" },
+    { value: "write_off_partial", label: "Baixa Parcial", type: "partial_write_off" },
   ];
 
   const handleAssetSelect = (assetId: string) => {
@@ -150,6 +152,10 @@ export default function AssetMovementsPage() {
         updateData.writeOffDate = formData.date;
         updateData.writeOffReason = formData.reason;
         updateData.writeOffValue = formData.value;
+      } else if (movementType?.type === "partial_write_off") {
+        const currentValue = Number(asset.value || 0);
+        const reduction = Number(formData.value || 0);
+        updateData.value = Math.max(0, currentValue - reduction);
       }
 
       await updateDoc(doc(db, "assets", formData.assetId), updateData);
@@ -163,6 +169,7 @@ export default function AssetMovementsPage() {
         destinationProjectId: "",
         destinationCostCenter: "",
         value: "",
+        percentage: "",
         reason: "",
       });
     } catch (error) {
@@ -198,6 +205,7 @@ export default function AssetMovementsPage() {
       if (m.type === "transfer_project") destination = `Obra: ${getProjectName(m.destinationProjectId)}`;
       else if (m.type === "transfer_cost_center") destination = `CC: ${getCostCenterName(m.destinationCostCenter)}`;
       else if (m.movementCategory === "write_off") destination = "Baixado";
+      else if (m.movementCategory === "partial_write_off") destination = "Baixa Parcial";
 
       return {
         "Data": new Date(m.date).toLocaleDateString('pt-BR'),
@@ -357,6 +365,46 @@ export default function AssetMovementsPage() {
                           />
                         </div>
                       )}
+                      {formData.type === "write_off_partial" && (
+                        <>
+                          <div>
+                            <label className="text-sm font-medium mb-1 block">Percentual da Baixa (%)</label>
+                            <Input 
+                              type="number" 
+                              placeholder="0%"
+                              className="bg-white"
+                              value={formData.percentage}
+                              onChange={(e) => {
+                                const pct = e.target.value;
+                                const asset = assets.find(a => a.id === formData.assetId);
+                                let val = formData.value;
+                                if (asset && asset.value) {
+                                    val = (Number(asset.value) * (Number(pct) / 100)).toFixed(2);
+                                }
+                                setFormData(prev => ({ ...prev, percentage: pct, value: val }));
+                              }}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-sm font-medium mb-1 block">Valor da Baixa (R$)</label>
+                            <Input 
+                              type="number" 
+                              placeholder="0,00"
+                              className="bg-white"
+                              value={formData.value}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                const asset = assets.find(a => a.id === formData.assetId);
+                                let pct = formData.percentage;
+                                if (asset && asset.value && Number(asset.value) > 0) {
+                                    pct = ((Number(val) / Number(asset.value)) * 100).toFixed(2);
+                                }
+                                setFormData(prev => ({ ...prev, value: val, percentage: pct }));
+                              }}
+                            />
+                          </div>
+                        </>
+                      )}
                       <div className={formData.type === "write_off_sale" ? "" : "col-span-2"}>
                         <label className="text-sm font-medium mb-1 block">Justificativa / Observações</label>
                         <Textarea 
@@ -420,6 +468,7 @@ export default function AssetMovementsPage() {
                   const typeInfo = MOVEMENT_TYPES.find(t => t.value === movement.type);
                   const isTransfer = movement.movementCategory === "transfer";
                   const isWriteOff = movement.movementCategory === "write_off";
+                  const isPartialWriteOff = movement.movementCategory === "partial_write_off";
 
                   return (
                     <TableRow key={movement.id}>
@@ -432,6 +481,7 @@ export default function AssetMovementsPage() {
                         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                           isTransfer ? 'bg-blue-100 text-blue-800' : 
                           isWriteOff ? 'bg-red-100 text-red-800' : 
+                          isPartialWriteOff ? 'bg-orange-100 text-orange-800' :
                           'bg-gray-100 text-gray-800'
                         }`}>
                           {typeInfo?.label || movement.type}
@@ -458,6 +508,14 @@ export default function AssetMovementsPage() {
                           <div className="flex flex-col">
                             <span className="text-red-600 flex items-center gap-1">
                               <XCircle size={14} /> Baixado
+                            </span>
+                            {movement.reason && <span className="text-xs text-gray-500 italic">{movement.reason}</span>}
+                          </div>
+                        )}
+                        {isPartialWriteOff && (
+                          <div className="flex flex-col">
+                            <span className="text-orange-600 flex items-center gap-1">
+                              <AlertTriangle size={14} /> Baixa Parcial
                             </span>
                             {movement.reason && <span className="text-xs text-gray-500 italic">{movement.reason}</span>}
                           </div>

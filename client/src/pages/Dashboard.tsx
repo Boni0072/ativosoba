@@ -441,7 +441,7 @@ export default function Dashboard() {
       
       // Date determination
       const acquisitionDateStr = asset.startDate; 
-      const acquisitionDate = new Date(acquisitionDateStr);
+      const acquisitionDate = getLocalDateFromISO(acquisitionDateStr);
       
       const availabilityDateStr = asset.availabilityDate;
       const availabilityDate = availabilityDateStr ? getLocalDateFromISO(availabilityDateStr) : null;
@@ -451,13 +451,17 @@ export default function Dashboard() {
 
       // Determine if it's a transfer this year (CIP -> Class)
       let isTransfer = false;
-      if (asset.status === 'concluido' && availabilityDate && availabilityDate >= startOfYear && availabilityDate <= now) {
-          isTransfer = true;
+      if (asset.status?.toLowerCase() === 'concluido') {
+          if (availabilityDate && availabilityDate.getFullYear() === currentYear) {
+              isTransfer = true;
+          } else if (acquisitionDate >= startOfYear) {
+              isTransfer = true;
+          }
       }
 
       // Determine if it's a write-off this year
       let isWriteOff = false;
-      if (asset.status === 'baixado' && writeOffDate && writeOffDate >= startOfYear && writeOffDate <= now) {
+      if (asset.status?.toLowerCase() === 'baixado' && writeOffDate && writeOffDate.getFullYear() === currentYear) {
           isWriteOff = true;
       }
 
@@ -573,8 +577,18 @@ export default function Dashboard() {
              else periodDep = calculatedAccumulated;
         }
 
-        movementMap[className].initialDepreciation += initialDep;
-        movementMap[className].periodDepreciation += periodDep;
+        if (className === "Imobilizado em andamento") {
+            if (isTransfer) {
+                const destClass = asset.assetClass || "Não Classificado";
+                if (movementMap[destClass]) {
+                    movementMap[destClass].initialDepreciation += initialDep;
+                    movementMap[destClass].periodDepreciation += periodDep;
+                }
+            }
+        } else {
+            movementMap[className].initialDepreciation += initialDep;
+            movementMap[className].periodDepreciation += periodDep;
+        }
       }
     });
 

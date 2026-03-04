@@ -28,7 +28,7 @@ const formatDate = (value: any) => {
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const { data: costCenters } = trpc.accounting.listCostCenters.useQuery();
+  const [costCenters, setCostCenters] = useState<any[]>([]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "projects"), (snapshot) => {
@@ -39,6 +39,14 @@ export default function ProjectsPage() {
         return codeA.localeCompare(codeB, undefined, { numeric: true });
       }));
       setIsLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "cost_centers"), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setCostCenters(data.sort((a: any, b: any) => a.code.localeCompare(b.code, undefined, { numeric: true })));
     });
     return () => unsubscribe();
   }, []);
@@ -231,15 +239,17 @@ export default function ProjectsPage() {
                 return null;
             };
             
-            const dStart = parseDate(row["Data de Início (AAAA-MM-DD)"]);
+            const dStart = parseDate(row["Data de Início (DD/MM/AAAA)"] || row["Data de Início (AAAA-MM-DD)"]);
             if (dStart) startDate = dStart;
 
-            const estimatedEndDate = parseDate(row["Data de Previsão de Conclusão (AAAA-MM-DD)"]);
+            const estimatedEndDate = parseDate(row["Data de Previsão de Conclusão (DD/MM/AAAA)"] || row["Data de Previsão de Conclusão (AAAA-MM-DD)"]);
 
             const location = row["Localização"] || "";
             const costCenter = row["Centro de Custo"] || "";
             
-            const plannedValue = row["Valor Planejado"] ? Number(row["Valor Planejado"]) : 0;
+            const plannedCapex = row["Capex Planejado"] ? Number(row["Capex Planejado"]) : 0;
+            const plannedOpex = row["Opex Planejado"] ? Number(row["Opex Planejado"]) : 0;
+            const plannedValue = row["Valor Planejado"] ? Number(row["Valor Planejado"]) : (plannedCapex + plannedOpex);
 
             await addDoc(collection(db, "projects"), {
                 code,
@@ -249,8 +259,8 @@ export default function ProjectsPage() {
                 estimatedEndDate,
                 location,
                 costCenter,
-                plannedCapex: 0,
-                plannedOpex: 0,
+                plannedCapex,
+                plannedOpex,
                 plannedValue,
                 status: 'aguardando_classificacao',
                 createdAt: new Date().toISOString()
