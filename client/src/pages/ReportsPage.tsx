@@ -397,7 +397,7 @@ export default function ReportsPage() {
         const asset = assets.find(a => a.id === id);
         const result = schedule.results?.find(r => r.assetId === id);
         
-        const currentCC = typeof asset?.costCenter === 'object' ? (asset.costCenter as any).code : asset?.costCenter;
+        const currentCC = typeof asset?.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset?.costCenter;
         const newCC = result?.newCostCenter || currentCC;
 
         return [
@@ -877,7 +877,7 @@ export default function ReportsPage() {
                               {schedule.assetIds.map(id => {
                                 const asset = assets?.find(a => a.id === id);
                                 const result = schedule.results?.find(r => r.assetId === id);
-                                const currentCC = typeof asset?.costCenter === 'object' ? (asset.costCenter as any).code : asset?.costCenter;
+                                const currentCC = typeof asset?.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset?.costCenter;
                                 return (
                                   <TableRow key={id} className="hover:bg-slate-50/50">
                                     <TableCell className="font-mono text-base pl-6">{asset?.assetNumber}</TableCell>

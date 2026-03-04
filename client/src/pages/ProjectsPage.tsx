@@ -33,7 +33,11 @@ export default function ProjectsPage() {
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "projects"), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setProjects(data);
+      setProjects(data.sort((a: any, b: any) => {
+        const codeA = a.code || "";
+        const codeB = b.code || "";
+        return codeA.localeCompare(codeB, undefined, { numeric: true });
+      }));
       setIsLoading(false);
     });
     return () => unsubscribe();

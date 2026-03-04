@@ -248,7 +248,7 @@ export default function AssetInventoryPage() {
       if (selectedAssetIds.length > 0) {
         const asset = assets.find(a => a.id === selectedAssetIds[0]);
         if (asset) {
-          const ccCode = typeof asset.costCenter === 'object' ? (asset.costCenter as any).code : asset.costCenter;
+          const ccCode = typeof asset.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset.costCenter;
           const costCenter = costCenters.find(c => c.code === ccCode);
           if (costCenter?.responsible) {
             const userFound = users.find(u => u.name?.trim().toLowerCase() === costCenter.responsible?.trim().toLowerCase());
@@ -355,7 +355,7 @@ export default function AssetInventoryPage() {
       const initialData: Record<string, { verified: boolean; costCenter: string; observations: string }> = {};
       performingSchedule.assetIds.forEach(id => {
         const asset = assets.find(a => a.id === id);
-        const currentCC = typeof asset?.costCenter === 'object' ? (asset.costCenter as any).code : asset?.costCenter;
+        const currentCC = typeof asset?.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset?.costCenter;
         initialData[id] = {
           verified: false, // Inicia como não verificado para forçar a contagem
           costCenter: currentCC || "",
@@ -1067,7 +1067,7 @@ export default function AssetInventoryPage() {
                     </TableCell>
                     <TableCell className="text-base">
                       {(() => {
-                         const ccCode = typeof asset.costCenter === 'object' ? (asset.costCenter as any).code : asset.costCenter;
+                         const ccCode = typeof asset.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset.costCenter;
                          const cc = costCenters.find(c => c.code === ccCode);
                          return (
                            <div className="flex flex-col">
@@ -1344,7 +1344,7 @@ export default function AssetInventoryPage() {
                         <div className="flex flex-col gap-1">
                             <span className="text-sm text-muted-foreground">
                                 {(() => {
-                                   const ccCode = typeof asset.costCenter === 'object' ? (asset.costCenter as any).code : asset.costCenter;
+                                   const ccCode = typeof asset.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset.costCenter;
                                    const cc = costCenters.find(c => c.code === ccCode);
                                    return cc ? `${cc.code} - ${cc.name}` : (ccCode || "-");
                                 })()}
@@ -1471,7 +1471,7 @@ export default function AssetInventoryPage() {
                <TableBody>
                  {reviewingSchedule?.results?.map((result, index) => {
                    const asset = assets.find(a => a.id === result.assetId);
-                   const currentCC = typeof asset?.costCenter === 'object' ? (asset.costCenter as any).code : asset?.costCenter || "-";
+                   const currentCC = typeof asset?.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset?.costCenter || "-";
                    const newCCCode = result.newCostCenter;
                    const newCC = costCenters.find(c => c.code === newCCCode);
                    const newCCLabel = newCC ? `${newCC.code} - ${newCC.name}` : newCCCode;
