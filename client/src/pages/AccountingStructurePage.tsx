@@ -34,6 +34,7 @@ interface CostCenter {
   name: string;
   department: string;
   responsible?: string;
+  responsibleEmail?: string;
 }
 
 interface AccountingAccount {
@@ -784,13 +785,13 @@ function CostCentersTab() {
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const handleEdit = (cc: CostCenter) => {
-    setForm({ code: cc.code, name: cc.name, department: cc.department, responsible: cc.responsible || "" });
+    setForm({ code: cc.code, name: cc.name, department: cc.department, responsible: cc.responsible || "", responsibleEmail: cc.responsibleEmail || "" });
     setEditingId(cc.id);
     setIsExpanded(true);
   };
 
   const cancelEdit = () => {
-    setForm({ code: "", name: "", department: "", responsible: "" });
+    setForm({ code: "", name: "", department: "", responsible: "", responsibleEmail: "" });
     setEditingId(null);
   };
 
@@ -841,6 +842,7 @@ function CostCentersTab() {
           name: String(row["Nome Centro de Custo"] || "").trim(),
           department: String(row["Departamento"] || "").trim(),
           responsible: String(row["Responsável"] || "").trim(),
+          responsibleEmail: String(row["Email do Responsável"] || "").trim(),
         })).filter(item => item.code && item.name && item.department);
 
         if (mappedData.length === 0) {
@@ -866,11 +868,11 @@ function CostCentersTab() {
   };
 
   const handleDownloadTemplate = () => {
-    const headers = ["Código Centro de Custo", "Nome Centro de Custo", "Departamento", "Responsável"];
-    const example = ["CC-001", "Administrativo", "Diretoria", "João Silva"];
+    const headers = ["Código Centro de Custo", "Nome Centro de Custo", "Departamento", "Responsável", "Email do Responsável"];
+    const example = ["CC-001", "Administrativo", "Diretoria", "João Silva", "joao.silva@empresa.com"];
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet([headers, example]);
-    ws['!cols'] = [{ wch: 20 }, { wch: 30 }, { wch: 30 }, { wch: 30 }];
+    ws['!cols'] = [{ wch: 20 }, { wch: 30 }, { wch: 30 }, { wch: 30 }, { wch: 30 }];
     XLSX.utils.book_append_sheet(wb, ws, "Template");
     XLSX.writeFile(wb, "template_centros_custo.xlsx");
   };
@@ -930,8 +932,14 @@ function CostCentersTab() {
           </div>
           <div className="flex-1">
             <label className="text-base font-medium">Responsável</label>
-            <Input value={form.responsible} onChange={e => setForm({...form, responsible: e.target.value})} placeholder="Ex: João Silva" />
-            <Select value={form.responsible} onValueChange={(v) => setForm({...form, responsible: v})}>
+            <Select value={form.responsible} onValueChange={(v) => {
+              const selectedUser = users.find(u => u.name === v);
+              setForm({
+                ...form,
+                responsible: v,
+                responsibleEmail: selectedUser?.email || ""
+              });
+            }}>
               <SelectTrigger className="bg-white">
                 <SelectValue placeholder="Selecione" />
               </SelectTrigger>
@@ -941,6 +949,10 @@ function CostCentersTab() {
                 ))}
               </SelectContent>
             </Select>
+          </div>
+          <div className="flex-1">
+            <label className="text-base font-medium">Email do Responsável</label>
+            <Input value={form.responsibleEmail || ""} onChange={e => setForm({...form, responsibleEmail: e.target.value})} placeholder="email@responsavel.com" />
           </div>
           <div className="flex gap-2">
             {editingId && (
@@ -965,6 +977,7 @@ function CostCentersTab() {
                 <TableHead className="text-base">Nome</TableHead>
                 <TableHead className="text-base">Departamento</TableHead>
                 <TableHead className="text-base">Responsável</TableHead>
+                <TableHead className="text-base">Email</TableHead>
                 <TableHead className="text-right text-base">Ações</TableHead>
               </TableRow>
             </TableHeader>
@@ -975,6 +988,7 @@ function CostCentersTab() {
                   <TableCell>{cc.name}</TableCell>
                   <TableCell>{cc.department}</TableCell>
                   <TableCell>{cc.responsible || "-"}</TableCell>
+                  <TableCell>{cc.responsibleEmail || "-"}</TableCell>
                   <TableCell className="text-right">
                     <Button variant="ghost" size="icon" onClick={() => handleEdit(cc)}>
                       <Pencil className="w-4 h-4 text-blue-500" />

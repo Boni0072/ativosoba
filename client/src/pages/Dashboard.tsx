@@ -1,10 +1,10 @@
 import { useState, useMemo, useEffect } from "react";
 import { db } from "@/lib/firebase";
 import { collection, onSnapshot, updateDoc, doc } from "firebase/firestore";
-import { ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Tooltip as RechartsTooltip, PieChart, Pie, Cell, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid, LabelList } from 'recharts';
+import { ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Tooltip as RechartsTooltip, PieChart, Pie, Cell, Legend, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, LabelList } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Loader2, TrendingUp, DollarSign, Package, Activity, BarChart3, ArrowUpRight, AlertTriangle, TrendingDown, Target, Wallet, X, ChevronDown, ChevronRight, ClipboardList, Calendar, CheckCircle2, Clock, FileText, ChevronLeft, Bell, Check, Eye } from "lucide-react";
+import { Loader2, TrendingUp, DollarSign, Package, Activity, BarChart3, ArrowUpRight, AlertTriangle, TrendingDown, Target, Wallet, X, ChevronDown, ChevronRight, ClipboardList, Calendar, CheckCircle2, Clock, FileText, ChevronLeft, Bell, Check, Eye, ArrowRightLeft } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useLocation } from "wouter";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
@@ -18,6 +18,22 @@ const formatCurrency = (value: number) =>
     currency: "BRL",
   }).format(value);
 
+const formatCurrencyCompact = (value: number) =>
+  new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+    notation: "compact",
+  }).format(value);
+
+const getAssetValue = (asset: any, allExpenses: any[]) => {
+    if (!asset) return 0;
+    const assetExpenses = allExpenses.filter(e => String(e.assetId) === String(asset.id));
+    const expensesTotal = assetExpenses.reduce((acc, curr) => acc + Number(curr.amount || 0), 0);
+    return Number(asset.value || 0) + expensesTotal;
+};
+
+const normalize = (str: string) => str?.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "") || "";
+
 const STATUS_COLORS: Record<string, string> = {
   aguardando_classificacao: '#3b82f6', // blue-500
   aguardando_engenharia: '#eab308', // yellow-500
@@ -29,6 +45,23 @@ const STATUS_COLORS: Record<string, string> = {
   concluido: '#14b8a6', // teal-500
   pausado: '#ec4899', // pink-500
   sem_status: '#94a3b8' // slate-400
+};
+
+const MOVEMENT_TYPES = [
+    { value: "transfer_project", label: "Transferência entre Obras", type: "transfer" },
+    { value: "transfer_cost_center", label: "Transferência de Centro de Custo", type: "transfer" },
+    { value: "write_off_sale", label: "Baixa por Venda", type: "write_off" },
+    { value: "write_off_obsolescence", label: "Baixa por Obsolescência", type: "write_off" },
+    { value: "write_off_theft", label: "Baixa por Roubo/Furto", type: "write_off" },
+    { value: "write_off_damage", label: "Baixa por Danos", type: "write_off" },
+    { value: "write_off_partial", label: "Baixa Parcial", type: "partial_write_off" },
+];
+
+const statusLabels: { [key: string]: string } = {
+    pending_approval: "Pendente",
+    completed: "Concluído",
+    rejected: "Rejeitado",
+    em_transito: "Em Trânsito"
 };
 
 // Helper para processar datas do Firestore (Timestamp) ou Strings ISO
@@ -49,6 +82,8 @@ export default function Dashboard() {
   const [isInventoryDataExpanded, setIsInventoryDataExpanded] = useState(false);
   const [isAssetsExpanded, setIsAssetsExpanded] = useState(false);
   const [isScheduleAnalysisExpanded, setIsScheduleAnalysisExpanded] = useState(false);
+  const [isMovementsExpanded, setIsMovementsExpanded] = useState(false);
+  const [depreciationModalData, setDepreciationModalData] = useState<any | null>(null);
   const [selectedMonthDrilldown, setSelectedMonthDrilldown] = useState<{ monthIndex: number, year: number, schedules: any[] } | null>(null);
   const [selectedDayDrilldown, setSelectedDayDrilldown] = useState<{ day: number, schedules: any[] } | null>(null);
   const [selectedStatusDrilldown, setSelectedStatusDrilldown] = useState<{ status: string, assets: any[] } | null>(null);
@@ -56,7 +91,9 @@ export default function Dashboard() {
   const [rejectionReason, setRejectionReason] = useState("");
 
   const [projects, setProjects] = useState<any[]>([]);
+  const [costCenters, setCostCenters] = useState<any[]>([]);
   const [schedules, setSchedules] = useState<any[]>([]);
+  const [movements, setMovements] = useState<any[]>([]);
   const [expenses, setExpenses] = useState<any[]>([]);
   const [assets, setAssets] = useState<any[]>([]);
   const [allBudgets, setAllBudgets] = useState<any[]>([]);
@@ -67,6 +104,9 @@ export default function Dashboard() {
   useEffect(() => {
     const unsubProjects = onSnapshot(collection(db, "projects"), (snapshot) => {
       setProjects(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    const unsubCostCenters = onSnapshot(collection(db, "cost_centers"), (snapshot) => {
+      setCostCenters(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
     const unsubExpenses = onSnapshot(collection(db, "expenses"), (snapshot) => {
       setExpenses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
@@ -83,6 +123,9 @@ export default function Dashboard() {
     const unsubSchedules = onSnapshot(collection(db, "inventory_schedules"), (snapshot) => {
       setSchedules(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
+    const unsubMovements = onSnapshot(collection(db, "asset_movements"), (snapshot) => {
+      setMovements(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
     const unsubUsers = onSnapshot(collection(db, "users"), (snapshot) => {
       setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     });
@@ -92,15 +135,23 @@ export default function Dashboard() {
 
     return () => {
       unsubProjects();
+      unsubCostCenters();
       unsubExpenses();
       unsubAssets();
       unsubBudgets();
       unsubAssetClasses();
       unsubSchedules();
+      unsubMovements();
       unsubUsers();
       clearTimeout(timer);
     };
   }, []);
+
+  const getProjectName = (id: string) => projects.find(p => String(p.id) === String(id))?.name || "—";
+  const getCostCenterName = (code: string) => {
+      const cc = costCenters?.find((c: any) => c.code === code);
+      return cc ? `${cc.code} - ${cc.name}` : code || "—";
+  };
 
   const getLocalDateFromISO = (value: any) => {
     if (!value) return new Date();
@@ -394,7 +445,7 @@ export default function Dashboard() {
         ccMap[cc].realized += Number(e.amount || 0);
     });
 
-    const costCenters = Object.entries(ccMap).map(([name, data]) => {
+    const costCenterMetrics = Object.entries(ccMap).map(([name, data]) => {
         const pct = data.budget > 0 ? (data.realized / data.budget) * 100 : 0;
         let status: 'verde' | 'amarelo' | 'vermelho' = 'verde';
         if (pct > 95) status = 'vermelho';
@@ -471,9 +522,130 @@ export default function Dashboard() {
       .sort((a, b) => b.value - a.value);
 
     return {
-        totalBudget, totalRealized, deviation, consumptionPct, burnRate, runRate, costCenters, monthlyEvolution, projectsByStatus
+        totalBudget, totalRealized, deviation, consumptionPct, burnRate, runRate, costCenters: costCenterMetrics, monthlyEvolution, projectsByStatus
     };
   }, [projects, expenses, allBudgets]);
+
+  // Análise de Movimentações
+  const movementAnalysis = useMemo(() => {
+    if (!movements.length || !costCenters.length || !assets.length) return null;
+
+    const stats = {
+      totalValueMoved: 0,
+      transfersCount: 0,
+      writeOffsCount: 0,
+      pendingApproval: movements.filter(m => m.status === 'pending_approval').length,
+      totalMovements: movements.length,
+      completed: movements.filter(m => m.status === 'completed').length,
+      rejected: movements.filter(m => m.status === 'rejected').length
+    };
+    
+    const getCode = (val: any) => typeof val === 'object' && val ? val.code : val;
+
+    const ccDataMap: Record<string, { 
+        name: string, 
+        balance: number, // For Saldo Líquido
+        inMovements: any[],
+        outMovements: any[],
+        inCount: number,
+        outCount: number,
+        entradas: number,
+        saidas: number,
+        completed: number, // For Volume
+        pending: number, // For Volume
+        rejected: number, // For Volume
+        total: number // For Volume
+    }> = {};
+
+    const initCC = (code: string) => {
+        if (!code) return;
+        if (!ccDataMap[code]) {
+            const ccObj = costCenters.find(c => c.code === code);
+            ccDataMap[code] = { 
+                name: ccObj ? ccObj.name : code, 
+                balance: 0,
+                inMovements: [],
+                outMovements: [],
+                inCount: 0,
+                outCount: 0,
+                entradas: 0,
+                saidas: 0,
+                completed: 0,
+                pending: 0,
+                rejected: 0,
+                total: 0
+            };
+        }
+    };
+
+    movements.forEach(m => {
+      let val = Number(m.value || 0);
+
+      if (val === 0 && m.assetId && assets.length > 0) {
+        const asset = assets.find(a => a.id === m.assetId);
+        if (asset) {
+            const assetExpenses = expenses.filter(e => String(e.assetId) === String(asset.id));
+            val = assetExpenses.reduce((acc, curr) => acc + Number(curr.amount), Number(asset.value || 0));
+        }
+      }
+
+      stats.totalValueMoved += val;
+      if (m.movementCategory === 'transfer') stats.transfersCount++;
+      if (m.movementCategory === 'write_off' || m.movementCategory === 'partial_write_off') stats.writeOffsCount++;
+
+      const origin = getCode(m.originCostCenter);
+      const dest = getCode(m.destinationCostCenter);
+      const status = m.status; // pending_approval, completed, rejected
+      
+      // For financial balance (Saldo Líquido)
+      if (status !== 'rejected') {
+          if (m.type === 'transfer_cost_center') {
+            if (dest) {
+                initCC(dest);
+                ccDataMap[dest].balance += val;
+                ccDataMap[dest].entradas += val;
+                ccDataMap[dest].inMovements.push(m);
+                ccDataMap[dest].inCount++;
+            }
+            if (origin) {
+                initCC(origin);
+                ccDataMap[origin].balance -= val;
+                ccDataMap[origin].saidas += val;
+                ccDataMap[origin].outMovements.push(m);
+                ccDataMap[origin].outCount++;
+            }
+          } else if (m.movementCategory === 'write_off' || m.movementCategory === 'partial_write_off') {
+            if (origin) {
+                initCC(origin);
+                ccDataMap[origin].balance -= val;
+                ccDataMap[origin].saidas += val;
+                ccDataMap[origin].outMovements.push(m);
+                ccDataMap[origin].outCount++;
+            }
+          }
+      }
+
+      // For volume chart (by status)
+      const targetCC = (m.movementCategory === 'transfer' && (status === 'completed' || status === 'pending_approval') && dest) ? dest : origin;
+      if (targetCC) {
+        initCC(targetCC);
+        if (status === 'completed') ccDataMap[targetCC].completed++;
+        else if (status === 'pending_approval') ccDataMap[targetCC].pending++;
+        else if (status === 'rejected') ccDataMap[targetCC].rejected++;
+        ccDataMap[targetCC].total++;
+      }
+    });
+
+    const performanceData = Object.values(ccDataMap)
+      .sort((a, b) => (b.inCount + b.outCount) - (a.inCount + a.outCount))
+      .slice(0, 10);
+
+    const recentMovements = [...movements]
+        .sort((a, b) => parseDate(b.date).getTime() - parseDate(a.date).getTime())
+        .slice(0, 5);
+
+    return { stats, performanceData, recentMovements };
+  }, [movements, costCenters, assets, expenses]);
 
   // Asset Movement Data (Current Year)
   const assetMovementData = useMemo(() => {
@@ -685,6 +857,50 @@ export default function Dashboard() {
       netValue: 0
     });
   }, [assetMovementData]);
+
+  const movementTotals = useMemo(() => {
+    if (!depreciationModalData || !assets || !expenses || !assetClasses) return null;
+
+    let inMonthly = 0;
+    let outMonthly = 0;
+    let inAccumulated = 0;
+    let outAccumulated = 0;
+
+    const process = (movements: any[], isIn: boolean) => {
+        if (!movements) return;
+        movements.forEach(m => {
+            const asset = assets.find(a => a.id === m.assetId);
+            if (asset) {
+                // Monthly Calculation
+                const cost = getAssetValue(asset, expenses);
+                const normalize = (str: string) => str?.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "") || "";
+                const assetClassDef = assetClasses.find(c => normalize(c.name) === normalize(asset.assetClass));
+                const usefulLifeYears = depreciationType === 'corporate' 
+                    ? (Number(asset.corporateUsefulLife) || Number(assetClassDef?.corporateUsefulLife) || 0)
+                    : (Number(asset.usefulLife) || Number(assetClassDef?.usefulLife) || 0);
+                const residualValue = Number(asset.residualValue || 0);
+                const depreciableValue = Math.max(0, cost - residualValue);
+                const monthly = (usefulLifeYears > 0 && depreciableValue > 0) ? depreciableValue / (usefulLifeYears * 12) : 0;
+                
+                // Accumulated
+                const accumulated = Number(asset.accumulatedDepreciation || 0);
+
+                if (isIn) {
+                    inMonthly += monthly;
+                    inAccumulated += accumulated;
+                } else {
+                    outMonthly += monthly;
+                    outAccumulated += accumulated;
+                }
+            }
+        });
+    };
+
+    process(depreciationModalData.inMovements, true);
+    process(depreciationModalData.outMovements, false);
+
+    return { inMonthly, outMonthly, inAccumulated, outAccumulated };
+  }, [depreciationModalData, assets, expenses, assetClasses, depreciationType]);
 
   if (isLoading) {
     return (
@@ -1335,6 +1551,332 @@ export default function Dashboard() {
             )}
         </div>
 
+        {/* Seção de Movimentações e Performance */}
+        <div className="space-y-6">
+            <div 
+                className="flex items-center gap-2 cursor-pointer select-none"
+                onClick={() => setIsMovementsExpanded(!isMovementsExpanded)}
+            >
+                {isMovementsExpanded ? <ChevronDown className="h-6 w-6 text-slate-600" /> : <ChevronRight className="h-6 w-6 text-slate-600" />}
+                <div className="flex items-center gap-2">
+                    <div className="p-2 bg-indigo-100 rounded-lg">
+                        <ArrowRightLeft className="w-6 h-6 text-indigo-600" />
+                    </div>
+                    <h2 className="text-xl font-semibold text-slate-700">Análise de Movimentações e Performance</h2>
+                </div>
+            </div>
+
+            {isMovementsExpanded && movementAnalysis && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-top-4 duration-300">
+                <div className="grid md:grid-cols-4 gap-4">
+                    <Card className="border-l-4 border-l-indigo-500 shadow-sm py-3">
+                        <CardHeader className="pb-0"><CardTitle className="text-sm font-medium text-slate-500 uppercase tracking-wider">Valor Total Movimentado</CardTitle></CardHeader>
+                        <CardContent><div className="text-2xl font-bold text-slate-800">{formatCurrency(movementAnalysis.stats.totalValueMoved)}</div></CardContent>
+                    </Card>
+                    <Card className="border-l-4 border-l-blue-500 shadow-sm py-3">
+                        <CardHeader className="pb-0"><CardTitle className="text-sm font-medium text-slate-500 uppercase tracking-wider">Transferências</CardTitle></CardHeader>
+                        <CardContent><div className="text-2xl font-bold text-slate-800">{movementAnalysis.stats.transfersCount}</div></CardContent>
+                    </Card>
+                    <Card className="border-l-4 border-l-red-500 shadow-sm py-3">
+                        <CardHeader className="pb-0"><CardTitle className="text-sm font-medium text-slate-500 uppercase tracking-wider">Baixas Realizadas</CardTitle></CardHeader>
+                        <CardContent><div className="text-2xl font-bold text-slate-800">{movementAnalysis.stats.writeOffsCount}</div></CardContent>
+                    </Card>
+                    <Card className={`border-l-4 shadow-sm py-3 ${movementAnalysis.stats.pendingApproval > 0 ? 'border-l-orange-500 bg-orange-50' : 'border-l-green-500'}`}>
+                        <CardHeader className="pb-0"><CardTitle className="text-sm font-medium text-slate-500 uppercase tracking-wider">Aprovações Pendentes</CardTitle></CardHeader>
+                        <CardContent><div className={`text-2xl font-bold ${movementAnalysis.stats.pendingApproval > 0 ? 'text-orange-600' : 'text-green-600'}`}>{movementAnalysis.stats.pendingApproval}</div></CardContent>
+                    </Card>
+                </div>
+
+                <div className="grid md:grid-cols-2 gap-6">
+                    <Card>
+                        <CardHeader><CardTitle className="text-lg font-semibold text-slate-700">Movimentação de Ativos por Centro de Custo (Quantidade)</CardTitle></CardHeader>
+                        <CardContent>
+                            <div className="h-[350px] w-full">
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <LineChart 
+                                        data={movementAnalysis.performanceData} 
+                                        margin={{ top: 30, right: 30, left: 20, bottom: 90 }}
+                                        onClick={(e) => {
+                                            if (e && e.activePayload && e.activePayload.length > 0) {
+                                                setDepreciationModalData(e.activePayload[0].payload);
+                                            }
+                                        }}
+                                    >
+                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                                        <XAxis 
+                                            dataKey="name" 
+                                            angle={-45} 
+                                            textAnchor="end" 
+                                            interval={0} 
+                                            tick={{ fill: '#64748b', fontSize: 11 }} 
+                                            height={100} 
+                                        />
+                                        <YAxis tick={{ fontSize: 10, fill: '#64748b' }} allowDecimals={false} />
+                                        <RechartsTooltip formatter={(val: number) => `${val} movimentações`} />
+                                        <Legend wrapperStyle={{ fontSize: 12, paddingTop: 10 }} />
+                                        <Line 
+                                            type="monotone" 
+                                            dataKey="inCount" 
+                                            name="Entradas" 
+                                            stroke="#22c55e" 
+                                            strokeWidth={2} 
+                                            dot={{ r: 4, fill: "#22c55e", cursor: 'pointer' }}
+                                            activeDot={{ r: 6 }}
+                                        >
+                                            <LabelList dataKey="inCount" position="top" offset={10} formatter={(val: number) => val > 0 ? val : ''} style={{ fontSize: 11, fontWeight: 600, fill: '#166534' }} />
+                                        </Line>
+                                        <Line 
+                                            type="monotone" 
+                                            dataKey="outCount" 
+                                            name="Saídas/Baixas" 
+                                            stroke="#ef4444" 
+                                            strokeWidth={2} 
+                                            dot={{ r: 4, fill: "#ef4444", cursor: 'pointer' }}
+                                            activeDot={{ r: 6 }}
+                                        >
+                                            <LabelList dataKey="outCount" position="bottom" offset={10} formatter={(val: number) => val > 0 ? val : ''} style={{ fontSize: 11, fontWeight: 600, fill: '#991b1b' }} />
+                                        </Line>
+                                    </LineChart>
+                                </ResponsiveContainer>
+                            </div>
+                            <p className="text-[10px] text-muted-foreground mt-4 italic text-center">
+                                * Mostra a quantidade de ativos que entraram e saíram de cada centro de custo.
+                            </p>
+                        </CardContent>
+                    </Card>
+
+                    <Card>
+                        <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
+                            <CardTitle className="text-lg font-semibold text-slate-700">Volume de Movimentações por Status (Top 10 CCs)</CardTitle>
+                            <div className="relative h-20 w-20">
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <PieChart>
+                                        <Pie
+                                            data={[
+                                                { name: 'Concluídas', value: movementAnalysis.stats.completed, fill: '#22c55e' },
+                                                { name: 'Pendentes', value: movementAnalysis.stats.pending, fill: '#f97316' },
+                                                { name: 'Rejeitadas', value: movementAnalysis.stats.rejected, fill: '#ef4444' }
+                                            ].filter(d => d.value > 0)}
+                                            innerRadius={25}
+                                            outerRadius={35}
+                                            paddingAngle={2}
+                                            dataKey="value"
+                                            stroke="none"
+                                        />
+                                    </PieChart>
+                                </ResponsiveContainer>
+                                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                                    <span className="text-sm font-bold text-slate-700 leading-none">{movementAnalysis.stats.totalMovements}</span>
+                                    <span className="text-[8px] text-slate-400 font-medium uppercase">Total</span>
+                                </div>
+                            </div>
+                        </CardHeader>
+                        <CardContent>
+                            <div className="h-[350px] w-full">
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <BarChart
+                                        data={movementAnalysis.performanceData}
+                                        margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
+                                    >
+                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                                        <XAxis 
+                                            dataKey="name" 
+                                            angle={-45} 
+                                            textAnchor="end" 
+                                            interval={0} 
+                                            tick={{ fill: '#64748b', fontSize: 11 }} 
+                                            height={80}
+                                        />
+                                        <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} allowDecimals={false} />
+                                        <RechartsTooltip cursor={{ fill: '#f1f5f9' }} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                                        <Legend wrapperStyle={{ fontSize: 12, paddingTop: 10 }} />
+                                        <Bar dataKey="completed" name="Concluídas" stackId="a" fill="#22c55e" />
+                                        <Bar dataKey="pending" name="Pendentes" stackId="a" fill="#f97316" />
+                                        <Bar dataKey="rejected" name="Rejeitadas" stackId="a" fill="#ef4444" radius={[4, 4, 0, 0]}>
+                                            <LabelList dataKey="total" position="top" style={{ fill: '#64748b', fontSize: 12 }} />
+                                        </Bar>
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            </div>
+                        </CardContent>
+                    </Card>
+                </div>
+
+                <Card className="mt-6">
+                    <CardHeader>
+                        <CardTitle className="text-lg font-semibold text-slate-700">Movimentações Recentes</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead>Data</TableHead>
+                                    <TableHead>Ativo</TableHead>
+                                    <TableHead>Tipo</TableHead>
+                                    <TableHead>Origem</TableHead>
+                                    <TableHead>Destino</TableHead>
+                                    <TableHead>Status</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {movementAnalysis.recentMovements.map(m => {
+                                    const origin = m.originProjectId ? `Obra: ${getProjectName(m.originProjectId)}` : m.originCostCenter ? `CC: ${getCostCenterName(m.originCostCenter)}` : "-";
+                                    let destination = "-";
+                                    if (m.type === "transfer_project") destination = `Obra: ${getProjectName(m.destinationProjectId)}`;
+                                    else if (m.type === "transfer_cost_center") destination = `CC: ${getCostCenterName(m.destinationCostCenter)}`;
+                                    else if (m.movementCategory?.includes("write_off")) destination = "Baixa";
+
+                                    return (
+                                        <TableRow key={m.id}>
+                                            <TableCell>{parseDate(m.date).toLocaleDateString('pt-BR')}</TableCell>
+                                            <TableCell>
+                                                <div className="font-medium">{m.assetName}</div>
+                                                <div className="text-xs text-muted-foreground">{m.assetNumber}</div>
+                                            </TableCell>
+                                            <TableCell>{MOVEMENT_TYPES.find(t => t.value === m.type)?.label || m.type}</TableCell>
+                                            <TableCell>{origin}</TableCell>
+                                            <TableCell>{destination}</TableCell>
+                                            <TableCell>
+                                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                                    m.status === 'completed' ? 'bg-green-100 text-green-800' :
+                                                    m.status === 'pending_approval' ? 'bg-yellow-100 text-yellow-800' :
+                                                    m.status === 'rejected' ? 'bg-red-100 text-red-800' :
+                                                    'bg-gray-100 text-gray-800'
+                                                }`}>
+                                                    {statusLabels[m.status] || m.status}
+                                                </span>
+                                            </TableCell>
+                                        </TableRow>
+                                    );
+                                })}
+                            </TableBody>
+                        </Table>
+                    </CardContent>
+                </Card>
+            </div>
+            )}
+        </div>
+
+      <Dialog open={!!depreciationModalData} onOpenChange={() => setDepreciationModalData(null)}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>Análise de Movimentação - {depreciationModalData?.name}</DialogTitle>
+            <DialogDescription>Detalhes de depreciação e valores para os ativos movimentados neste centro de custo.</DialogDescription>
+          </DialogHeader>
+          {depreciationModalData && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-4">
+              <div className="col-span-1">
+                <h4 className="font-semibold mb-2">Fluxo de Valor (R$)</h4>
+                <div className="h-[250px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={[{ name: 'Fluxo', Entradas: depreciationModalData.entradas, Saídas: depreciationModalData.saidas }]}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="name" />
+                      <YAxis tickFormatter={(val) => new Intl.NumberFormat('pt-BR', { notation: "compact" }).format(val)} />
+                      <RechartsTooltip formatter={(val: number) => formatCurrency(val)} />
+                      <Legend />
+                      <Bar dataKey="Entradas" fill="#22c55e" radius={[4, 4, 0, 0]}>
+                        <LabelList dataKey="Entradas" position="top" formatter={(val: number) => val > 0 ? formatCurrencyCompact(val) : ''} style={{ fontSize: 11, fill: '#166534' }} />
+                      </Bar>
+                      <Bar dataKey="Saídas" fill="#ef4444" radius={[4, 4, 0, 0]}>
+                        <LabelList dataKey="Saídas" position="top" formatter={(val: number) => val > 0 ? formatCurrencyCompact(val) : ''} style={{ fontSize: 11, fill: '#991b1b' }} />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+              <div className="col-span-1 md:col-span-2">
+                <div className="flex items-center justify-between mb-2">
+                    <h4 className="font-semibold">Ativos Movimentados</h4>
+                </div>
+                
+                {movementTotals && (
+                    <div className="grid grid-cols-2 gap-4 mb-3">
+                        <div className="bg-green-50 p-3 rounded-md border border-green-100">
+                            <p className="text-xs font-semibold text-green-800 uppercase mb-1">Entradas</p>
+                            <div className="flex justify-between text-sm">
+                                <div>
+                                    <span className="text-green-700/70 block text-[10px]">Deprec. Mensal</span>
+                                    <span className="font-bold text-green-700">{formatCurrency(movementTotals.inMonthly)}</span>
+                                </div>
+                                <div className="text-right">
+                                    <span className="text-green-700/70 block text-[10px]">Deprec. Acumulada</span>
+                                    <span className="font-bold text-green-700">{formatCurrency(movementTotals.inAccumulated)}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="bg-red-50 p-3 rounded-md border border-red-100">
+                            <p className="text-xs font-semibold text-red-800 uppercase mb-1">Saídas</p>
+                            <div className="flex justify-between text-sm">
+                                <div>
+                                    <span className="text-red-700/70 block text-[10px]">Deprec. Mensal</span>
+                                    <span className="font-bold text-red-700">{formatCurrency(movementTotals.outMonthly)}</span>
+                                </div>
+                                <div className="text-right">
+                                    <span className="text-red-700/70 block text-[10px]">Deprec. Acumulada</span>
+                                    <span className="font-bold text-red-700">{formatCurrency(movementTotals.outAccumulated)}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                <div className="h-[250px] overflow-y-auto border rounded-md">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Ativo</TableHead>
+                        <TableHead className="text-right">Deprec. Mensal</TableHead>
+                        <TableHead>Tipo</TableHead>
+                        <TableHead>Aprovador</TableHead>
+                        <TableHead className="text-right">Data</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {[...(depreciationModalData.inMovements || []), ...(depreciationModalData.outMovements || [])]
+                        .sort((a, b) => parseDate(b.createdAt).getTime() - parseDate(a.createdAt).getTime())
+                        .map((movement: any, index: number) => {
+                        const asset = assets.find(a => a.id === movement.assetId);
+                        const isEntrada = depreciationModalData.inMovements.some((m: any) => m.id === movement.id);
+                        
+                        let monthlyDepreciation = 0;
+                        if (asset) {
+                            const cost = getAssetValue(asset, expenses);
+                            const assetClassDef = assetClasses.find(c => normalize(c.name) === normalize(asset.assetClass));
+                            const usefulLifeYears = depreciationType === 'corporate' 
+                                ? (Number(asset.corporateUsefulLife) || Number(assetClassDef?.corporateUsefulLife) || 0)
+                                : (Number(asset.usefulLife) || Number(assetClassDef?.usefulLife) || 0);
+                            const residualValue = Number(asset.residualValue || 0);
+                            const depreciableValue = Math.max(0, cost - residualValue);
+                            monthlyDepreciation = (usefulLifeYears > 0 && depreciableValue > 0) ? depreciableValue / (usefulLifeYears * 12) : 0;
+                        }
+
+                        return (
+                          <TableRow key={movement.id || index}>
+                            <TableCell>
+                              <div className="font-medium">{asset?.name || movement.assetName}</div>
+                              <div className="text-xs text-muted-foreground">{asset?.assetNumber || movement.assetNumber}</div>
+                            </TableCell>
+                            <TableCell className="text-right font-mono">{formatCurrency(monthlyDepreciation)}</TableCell>
+                            <TableCell>
+                                <span className={`text-xs font-semibold px-2 py-1 rounded-full ${isEntrada ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                                    {isEntrada ? 'Entrada' : 'Saída'}
+                                </span>
+                            </TableCell>
+                            <TableCell className="text-sm text-muted-foreground">{movement.approvedBy || movement.rejectedBy || 'N/A'}</TableCell>
+                            <TableCell className="text-right text-sm text-muted-foreground">{parseDate(movement.approvedAt || movement.rejectedAt || movement.createdAt).toLocaleDateString('pt-BR')}</TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
         {/* Seção de Dados de Inventário */}
         <div className="space-y-6">
             <div 
@@ -1522,6 +2064,7 @@ export default function Dashboard() {
                         </div>
                     </CardContent>
                 </Card>
+
             </div>
 
             {/* Propostas de Cronograma */}

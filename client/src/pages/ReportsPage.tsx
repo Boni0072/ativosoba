@@ -22,6 +22,7 @@ interface InventorySchedule {
   id: string;
   requesterId?: string; // Opcional para suportar agendamentos antigos
   assetIds: string[];
+  costCenterCodes?: string[];
   userIds: string[];
   date: string;
   notes: string;
@@ -352,8 +353,43 @@ export default function ReportsPage() {
     toast.success("Relatório de depreciação exportado com sucesso!");
   };
 
-  const handleExportReport = async (schedule: InventorySchedule) => {
+  const handleExportReport = async (clickedSchedule: InventorySchedule) => {
     if (!assets) return;
+
+    // 1. Encontra todos os agendamentos relacionados para agrupar no relatório
+    const dateToMatch = getLocalDateFromISO(clickedSchedule.date).toLocaleDateString('pt-BR');
+    
+    const relatedSchedules = completedSchedules.filter(s => {
+        if (getLocalDateFromISO(s.date).toLocaleDateString('pt-BR') !== dateToMatch) {
+            return false;
+        }
+
+        // Agrupa por centro de custo, se o agendamento clicado foi por CC
+        if (clickedSchedule.costCenterCodes && clickedSchedule.costCenterCodes.length > 0) {
+            const clickedCCs = [...clickedSchedule.costCenterCodes].sort().join(',');
+            const currentCCs = s.costCenterCodes ? [...s.costCenterCodes].sort().join(',') : '';
+            if (!currentCCs) return false;
+            return clickedCCs === currentCCs;
+        }
+
+        // Senão, agrupa por responsáveis (apenas para agendamentos que não foram por CC)
+        if (s.costCenterCodes && s.costCenterCodes.length > 0) return false;
+        const clickedUsers = [...clickedSchedule.userIds].sort().join(',');
+        const currentUsers = [...s.userIds].sort().join(',');
+        return clickedUsers === currentUsers;
+    });
+
+    if (!relatedSchedules.find(s => s.id === clickedSchedule.id)) {
+        relatedSchedules.push(clickedSchedule); // Garante que pelo menos o clicado seja processado
+    }
+
+    // 2. Agrega os dados de todos os agendamentos em uma única lista
+    const mainSchedule = relatedSchedules[0];
+    // Usa flatMap para combinar os resultados, garantindo que results exista
+    const allResults = relatedSchedules.flatMap(s => s.results || []);
+
+    // Define o schedule a ser usado como base para assinaturas e cabeçalho
+    const scheduleForMetadata = mainSchedule;
 
     try {
       const doc = new jsPDF();
@@ -387,30 +423,39 @@ export default function ReportsPage() {
         doc.text("Relatório de Inventário", pageWidth - 14, 18, { align: 'right' });
         doc.setFontSize(9);
         doc.setTextColor(100);
-        doc.text(`Data: ${new Date(schedule.date).toLocaleDateString('pt-BR')}`, pageWidth - 14, 24, { align: 'right' });
+        doc.text(`Data: ${getLocalDateFromISO(scheduleForMetadata.date).toLocaleDateString('pt-BR')}`, pageWidth - 14, 24, { align: 'right' });
+        
+        if (scheduleForMetadata.costCenterCodes && scheduleForMetadata.costCenterCodes.length > 0) {
+             doc.text(`Centros de Custo: ${scheduleForMetadata.costCenterCodes.join(', ')}`, pageWidth - 14, 29, { align: 'right' });
+        } else {
+             const responsibles = scheduleForMetadata.userIds.map(uid => users.find(u => u.id === uid)?.name).filter(Boolean).join(", ");
+             doc.text(`Responsáveis: ${responsibles}`, pageWidth - 14, 29, { align: 'right' });
+        }
         
         doc.setDrawColor(200);
         doc.line(14, 30, pageWidth - 14, 30);
       };
 
-      const tableData = schedule.assetIds.map(id => {
-        const asset = assets.find(a => a.id === id);
-        const result = schedule.results?.find(r => r.assetId === id);
+      const tableData = allResults.map(result => {
+        const asset = assets.find(a => a.id === result.assetId);
         
         const currentCC = typeof asset?.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset?.costCenter;
         const newCC = result?.newCostCenter || currentCC;
 
         return [
           asset?.assetNumber || "-",
+          asset?.tagNumber || "-",
           asset?.name || "-",
           currentCC || "-",
           newCC || "-",
-          result?.verified ? "Verificado" : "Não Verificado"
+          result?.verified ? "Verificado" : "Não Verificado",
+          // @ts-ignore - observations might not be in interface but exists in data
+          result?.observations || ""
         ];
       });
 
       autoTable(doc, {
-        head: [["Nº Ativo", "Nome", "CC Anterior", "Novo CC", "Status"]],
+        head: [["Nº Ativo", "Plaqueta", "Nome", "CC Anterior", "Novo CC", "Status", "Obs"]],
         body: tableData,
         startY: 35,
         didDrawPage: addHeaderAndWatermark,
@@ -440,7 +485,7 @@ export default function ReportsPage() {
       }
 
       // Assinatura do Responsável (pega o primeiro se houver múltiplos)
-      const responsibleId = schedule.userIds[0];
+      const responsibleId = scheduleForMetadata.userIds[0];
       const responsible = users.find(u => String(u.id) === String(responsibleId));
       if (responsible?.signature && responsible.signature.startsWith('data:image')) {
         try {
@@ -449,7 +494,7 @@ export default function ReportsPage() {
       }
       
       // Assinatura do Aprovador
-      const approver = users.find(u => u.name === schedule.approvedBy);
+      const approver = users.find(u => u.name === scheduleForMetadata.approvedBy);
       if (approver?.signature && approver.signature.startsWith('data:image')) {
         try {
           doc.addImage(approver.signature, 'PNG', 150, finalY - 25, 40, 20);
@@ -463,7 +508,7 @@ export default function ReportsPage() {
       doc.text("Aprovador", 170, finalY + 5, { align: 'center' });
       doc.text(requester?.name || "N/A", 40, finalY + 10, { align: 'center' });
       doc.text(responsible?.name || "N/A", 105, finalY + 10, { align: 'center' });
-      doc.text(schedule.approvedBy || "N/A", 170, finalY + 10, { align: 'center' });
+      doc.text(scheduleForMetadata.approvedBy || "N/A", 170, finalY + 10, { align: 'center' });
 
       doc.setFontSize(7);
       doc.setTextColor(100);
@@ -474,11 +519,11 @@ export default function ReportsPage() {
         return dateObj.toLocaleString('pt-BR');
       };
 
-      doc.text(formatDate(schedule.createdAt || schedule.date), 40, finalY + 15, { align: 'center' });
-      doc.text(formatDate(schedule.approvedAt), 105, finalY + 15, { align: 'center' });
-      doc.text(formatDate(schedule.approvedAt), 170, finalY + 15, { align: 'center' });
+      doc.text(formatDate(scheduleForMetadata.createdAt || scheduleForMetadata.date), 40, finalY + 15, { align: 'center' });
+      doc.text(formatDate(scheduleForMetadata.approvedAt), 105, finalY + 15, { align: 'center' });
+      doc.text(formatDate(scheduleForMetadata.approvedAt), 170, finalY + 15, { align: 'center' });
 
-      doc.save(`relatorio_inventario_${new Date(schedule.date).toISOString().split('T')[0]}.pdf`);
+      doc.save(`relatorio_inventario_${getLocalDateFromISO(scheduleForMetadata.date).toISOString().split('T')[0]}.pdf`);
       toast.success("Relatório PDF gerado com sucesso!");
     } catch (error) {
       console.error("Erro ao gerar PDF:", error);
@@ -868,8 +913,9 @@ export default function ReportsPage() {
                                         {schedule.userIds.map(uid => users?.find(u => u.id === uid)?.name).filter(Boolean).join(", ")}
                                       </div>
                                     </div>
-                                    <Button variant="outline" size="sm" onClick={() => handleExportReport(schedule)} className="h-10 text-base bg-white border-slate-300 hover:bg-slate-50">
-                                      <Download className="w-5 h-5 mr-2" /> Exportar PDF
+                                    <Button variant="outline" size="sm" onClick={() => handleExportReport(schedule)} className="h-8 text-sm bg-white border-slate-300 hover:bg-slate-50 text-slate-700">
+                                      <Download className="w-4 h-4 mr-2" />
+                                      Exportar PDF
                                     </Button>
                                   </div>
                                 </TableCell>

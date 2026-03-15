@@ -2,13 +2,14 @@ import React, { useState, useEffect, useRef } from "react";
 import { db } from "@/lib/firebase";
 import { collection, addDoc, updateDoc, doc, onSnapshot, writeBatch } from "firebase/firestore";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Loader2, Search, Download, QrCode, ClipboardList, Calendar as CalendarIcon, Users, CheckCircle2, AlertCircle, PlayCircle, Check, XCircle, ChevronDown, ChevronUp, Camera, X } from "lucide-react";
+import { Loader2, Search, Download, QrCode, ClipboardList, Calendar as CalendarIcon, Users, CheckCircle2, AlertCircle, PlayCircle, Check, XCircle, ChevronDown, ChevronUp, Camera, X, Plus } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
@@ -35,6 +36,7 @@ interface InventorySchedule {
   id: string;
   requesterId?: string;
   assetIds: string[];
+  costCenterCodes?: string[];
   userIds: string[];
   date: string;
   notes: string;
@@ -67,6 +69,143 @@ const getBase64ImageFromURL = (url: string): Promise<string> => {
   });
 };
 
+function NewAssetFromInventoryDialog({
+  open,
+  onOpenChange,
+  initialCode,
+  costCenters,
+  assetClasses,
+  defaultCostCenter,
+  onSuccess,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  initialCode: string;
+  costCenters: any[];
+  assetClasses: any[];
+  defaultCostCenter?: string;
+  onSuccess: (newAsset: any) => void;
+}) {
+  const [nextAssetNumber, setNextAssetNumber] = useState("");
+  const [formData, setFormData] = useState({
+    name: "",
+    assetClass: "",
+    costCenter: "",
+    value: "",
+    startDate: new Date().toISOString().split("T")[0],
+    invoiceNumber: "",
+  });
+
+  useEffect(() => {
+    if (open) {
+      if (defaultCostCenter) {
+        setFormData(prev => ({ ...prev, costCenter: defaultCostCenter }));
+      }
+
+      // Fetch next asset number when dialog opens
+      const q = collection(db, "assets");
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const assets = snapshot.docs.map(doc => doc.data());
+        const numbers = assets
+          .map(a => a.assetNumber)
+          .filter(n => typeof n === 'string' && n.startsWith("ATV-"))
+          .map(n => parseInt(n.replace("ATV-", ""), 10))
+          .filter(n => !isNaN(n));
+        const max = numbers.length > 0 ? Math.max(...numbers) : 0;
+        setNextAssetNumber(`ATV-${String(max + 1).padStart(6, '0')}`);
+      });
+      return () => unsubscribe();
+    }
+  }, [open, defaultCostCenter]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.name || !formData.assetClass || !formData.costCenter) {
+      toast.error("Preencha Nome, Classe e Centro de Custo.");
+      return;
+    }
+
+    const payload = {
+      assetNumber: nextAssetNumber,
+      tagNumber: initialCode,
+      name: formData.name,
+      assetClass: formData.assetClass,
+      costCenter: formData.costCenter,
+      value: Number(formData.value) || 0,
+      startDate: new Date(formData.startDate).toISOString(),
+      invoiceNumber: formData.invoiceNumber || "",
+      status: 'concluido', // It's being inventoried, so it's considered 'concluido' (available for use)
+      createdAt: new Date().toISOString(),
+    };
+
+    try {
+      const docRef = await addDoc(collection(db, "assets"), payload);
+      onSuccess({ id: docRef.id, ...payload });
+    } catch (error) {
+      console.error("Erro ao criar ativo:", error);
+      toast.error("Falha ao criar novo ativo.");
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Ativo não encontrado na base</DialogTitle>
+          <DialogDescription>
+            O código "{initialCode}" não foi localizado. Cadastre-o como um novo ativo.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4 py-4">
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <Label>Nome do Ativo</Label>
+              <Input value={formData.name} onChange={e => setFormData(prev => ({...prev, name: e.target.value}))} required placeholder="Ex: Notebook Dell" />
+            </div>
+            <div>
+              <Label>Valor (R$)</Label>
+              <Input type="number" value={formData.value} onChange={e => setFormData(prev => ({...prev, value: e.target.value}))} placeholder="0,00" />
+            </div>
+            <div>
+              <Label>Data de Início/Aquisição</Label>
+              <Input type="date" value={formData.startDate} onChange={e => setFormData(prev => ({...prev, startDate: e.target.value}))} />
+            </div>
+            <div>
+              <Label>Classe do Ativo</Label>
+              <Select value={formData.assetClass} onValueChange={v => setFormData(prev => ({...prev, assetClass: v}))} required>
+                <SelectTrigger><SelectValue placeholder="Selecione..." /></SelectTrigger>
+                <SelectContent>
+                  {assetClasses.map(c => <SelectItem key={c.id} value={c.name}>{c.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Nota Fiscal</Label>
+              <Input value={formData.invoiceNumber} onChange={e => setFormData(prev => ({...prev, invoiceNumber: e.target.value}))} placeholder="Número da NF" />
+            </div>
+            <div>
+              <Label>Centro de Custo</Label>
+              <Select value={formData.costCenter} onValueChange={v => setFormData(prev => ({...prev, costCenter: v}))} required disabled={!!defaultCostCenter}>
+                <SelectTrigger><SelectValue placeholder="Selecione..." /></SelectTrigger>
+                <SelectContent>
+                  {costCenters.map(c => <SelectItem key={c.id} value={c.code}>{c.code} - {c.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>Cancelar</Button>
+            <Button type="submit">
+              <Plus className="mr-2 h-4 w-4" />
+              Cadastrar Novo Ativo
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function AssetInventoryPage() {
   const { user: authUser } = useAuth();
   const [user, setUser] = useState<any>(authUser);
@@ -93,7 +232,10 @@ export default function AssetInventoryPage() {
   const [performingSchedule, setPerformingSchedule] = useState<InventorySchedule | null>(null);
   const [reviewingSchedule, setReviewingSchedule] = useState<InventorySchedule | null>(null);
   const [executionData, setExecutionData] = useState<Record<string, { verified: boolean; costCenter: string; observations: string }>>({});
+  const [isNewAssetDialogOpen, setIsNewAssetDialogOpen] = useState(false);
+  const [newAssetInitialCode, setNewAssetInitialCode] = useState("");
   const [selectedForApproval, setSelectedForApproval] = useState<string[]>([]);
+  const [selectedCostCentersForSchedule, setSelectedCostCentersForSchedule] = useState<string[]>([]);
 
   useEffect(() => {
     if (reviewingSchedule?.results) {
@@ -205,13 +347,13 @@ export default function AssetInventoryPage() {
     const assetCC = typeof asset.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset.costCenter;
     const matchesCostCenter = selectedCostCenter === "all" || assetCC === selectedCostCenter;
     const matchesAssetClass = selectedAssetClass === "all" || asset.assetClass === selectedAssetClass;
-    const isCompleted = asset.status === 'concluido';
+    const isInventoriable = asset.status !== 'baixado';
     
     const lastInventory = getLastInventory(asset.id);
     const hasObs = lastInventory?.results?.find(r => r.assetId === asset.id)?.observations;
     const matchesObs = !showOnlyWithObs || (showOnlyWithObs && !!hasObs);
 
-    return matchesSearch && matchesCostCenter && matchesAssetClass && isCompleted && matchesObs;
+    return matchesSearch && matchesCostCenter && matchesAssetClass && isInventoriable && matchesObs;
   });
 
   // Reset pagination when filters change
@@ -243,23 +385,106 @@ export default function AssetInventoryPage() {
 
   useEffect(() => {
     if (isScheduleOpen) {
-      let responsibleId = "";
+      let approverId = "";
+      let performerIds: string[] = [];
       
-      if (selectedAssetIds.length > 0) {
+      if (selectedCostCentersForSchedule.length > 0) {
+        // Scheduling by Cost Center: find responsible(s) to be performers
+        selectedCostCentersForSchedule.forEach(ccCode => {
+          const costCenter = costCenters.find(c => c.code === ccCode);
+          if (costCenter?.responsible) {
+            const userFound = users.find(u => u.name?.trim().toLowerCase() === costCenter.responsible?.trim().toLowerCase());
+            if (userFound && !performerIds.includes(userFound.id)) {
+              performerIds.push(userFound.id);
+            }
+          }
+        });
+        setSelectedUserIds(performerIds);
+        // Set approver to the first responsible, or current user if none found
+        approverId = performerIds[0] || currentUserId || "";
+      } else if (selectedAssetIds.length > 0) {
+        // Fallback for by-asset scheduling: set approver based on first asset's CC
         const asset = assets.find(a => a.id === selectedAssetIds[0]);
         if (asset) {
           const ccCode = typeof asset.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset.costCenter;
           const costCenter = costCenters.find(c => c.code === ccCode);
           if (costCenter?.responsible) {
             const userFound = users.find(u => u.name?.trim().toLowerCase() === costCenter.responsible?.trim().toLowerCase());
-            if (userFound) responsibleId = userFound.id;
+            if (userFound) approverId = userFound.id;
           }
         }
       }
       
-      setSelectedApproverId(responsibleId || currentUserId || "");
+      setSelectedApproverId(approverId || currentUserId || "");
+    } else {
+      // Reset performers when dialog closes
+      setSelectedUserIds([]);
     }
-  }, [isScheduleOpen, currentUserId, selectedAssetIds, assets, costCenters, users]);
+  }, [isScheduleOpen, currentUserId, selectedAssetIds, selectedCostCentersForSchedule, assets, costCenters, users]);
+
+  const handleNewAssetCreated = (newAsset: any) => {
+    // Add the new asset to the local state so it's available immediately
+    setAssets(prev => [...prev, newAsset]);
+
+    // Add it to the current inventory execution
+    const currentCC = typeof newAsset.costCenter === 'object' && newAsset.costCenter ? (newAsset.costCenter as any).code : newAsset.costCenter;
+    setExecutionData(prev => ({
+        ...prev,
+        [newAsset.id]: { verified: true, costCenter: currentCC || "", observations: "Criado e adicionado durante a contagem" }
+    }));
+
+    // Also add to the schedule's assetIds locally so it appears in the list
+    setPerformingSchedule(prev => prev ? ({ ...prev, assetIds: [...prev.assetIds, newAsset.id] }) : null);
+
+    toast.success(`Novo ativo "${newAsset.name}" criado e adicionado à contagem.`);
+    setIsNewAssetDialogOpen(false);
+    setScanInput("");
+  };
+
+  const getLastScheduleForCC = (ccCode: string) => {
+    const relevantSchedules = schedules
+        .filter(s => s.costCenterCodes && s.costCenterCodes.includes(ccCode))
+        .sort((a, b) => {
+            const dateA = a.createdAt ? getDate(a.createdAt).getTime() : 0;
+            const dateB = b.createdAt ? getDate(b.createdAt).getTime() : 0;
+            return dateB - dateA;
+        });
+    return relevantSchedules[0] || null;
+  };
+
+  const handleScheduleByCostCenter = () => {
+    if (selectedCostCentersForSchedule.length === 0) {
+        toast.error("Selecione pelo menos um centro de custo.");
+        return;
+    }
+    const assetsToSchedule = assets.filter(asset => {
+        const assetCC = typeof asset.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset.costCenter;
+        return selectedCostCentersForSchedule.includes(assetCC);
+    }).map(asset => asset.id);
+
+    if (assetsToSchedule.length === 0) {
+        toast.warning("Nenhum ativo encontrado. Um inventário em branco será criado para o(s) centro(s) de custo selecionado(s).");
+    }
+
+    setSelectedAssetIds(assetsToSchedule);
+    setIsScheduleOpen(true);
+  };
+
+  const toggleCostCenterSelection = (ccCode: string) => {
+      setSelectedCostCentersForSchedule(prev =>
+          prev.includes(ccCode) ? prev.filter(code => code !== ccCode) : [...prev, ccCode]
+      );
+  };
+
+  const isAllCostCentersSelected = costCenters.length > 0 && selectedCostCentersForSchedule.length === costCenters.length;
+
+  const toggleAllCostCenters = () => {
+      if (isAllCostCentersSelected) {
+          setSelectedCostCentersForSchedule([]);
+      } else {
+          setSelectedCostCentersForSchedule(costCenters.map(cc => cc.code));
+      }
+  };
 
   const myPendingSchedules = schedules.filter(s => 
     s.status === 'pending' && currentUserId && s.userIds.some(uid => String(uid) === String(currentUserId))
@@ -372,23 +597,22 @@ export default function AssetInventoryPage() {
     if (!performingSchedule || !scanInput) return;
 
     const term = scanInput.trim().toLowerCase();
-    
-    // Procura o ativo na lista do agendamento
-    const assetId = performingSchedule.assetIds.find(id => {
+
+    // 1. Check if asset is in the current schedule
+    const scheduledAssetId = performingSchedule.assetIds.find(id => {
       const asset = assets.find(a => a.id === id);
       return asset && (
         (asset.tagNumber && asset.tagNumber.toLowerCase() === term) ||
         (asset.assetNumber && asset.assetNumber.toLowerCase() === term)
       );
     });
-
-    if (assetId) {
-      if (executionData[assetId]?.verified) {
+    if (scheduledAssetId) {
+      if (executionData[scheduledAssetId]?.verified) {
          toast.info(`Ativo já conferido: ${scanInput}`);
       } else {
          setExecutionData(prev => ({
             ...prev,
-            [assetId]: { ...prev[assetId], verified: true }
+            [scheduledAssetId]: { ...prev[scheduledAssetId], verified: true }
          }));
          toast.success(`Ativo conferido: ${scanInput}`);
          // Feedback sonoro simples
@@ -396,8 +620,134 @@ export default function AssetInventoryPage() {
          audio.play().catch(() => {});
       }
       setScanInput("");
-    } else {
-      toast.error(`Ativo não encontrado na lista deste inventário: ${scanInput}`);
+      return;
+    }
+
+    // 2. If not in schedule, check if it exists in the main database
+    const existingAsset = assets.find(asset => 
+        (asset.tagNumber && asset.tagNumber.toLowerCase() === term) ||
+        (asset.assetNumber && asset.assetNumber.toLowerCase() === term)
+    );
+
+    if (existingAsset) {
+        // Asset exists but wasn't part of the schedule. Add it to the current execution.
+        if (executionData[existingAsset.id]) {
+            toast.info(`Ativo já adicionado a esta contagem: ${scanInput}`);
+        } else {
+            const currentCC = typeof existingAsset.costCenter === 'object' && existingAsset.costCenter ? (existingAsset.costCenter as any).code : existingAsset.costCenter;
+            setExecutionData(prev => ({
+                ...prev,
+                [existingAsset.id]: { verified: true, costCenter: currentCC || "", observations: "Adicionado durante a contagem" }
+            }));
+            // Also add to the schedule's assetIds locally so it appears in the list
+            setPerformingSchedule(prev => prev ? ({ ...prev, assetIds: [...prev.assetIds, existingAsset.id] }) : null);
+            toast.success(`Ativo existente adicionado à contagem: ${scanInput}`);
+        }
+        setScanInput("");
+        return;
+    }
+
+    // 3. Asset does not exist anywhere. Open the creation dialog.
+    setNewAssetInitialCode(scanInput);
+    setIsNewAssetDialogOpen(true);
+    // Clear input after attempting to create
+    setScanInput("");
+  };
+
+  const handleExportScheduleResult = async (clickedSchedule: InventorySchedule) => {
+    // 1. Encontra todos os agendamentos relacionados para agrupar no relatório
+    const dateToMatch = getDate(clickedSchedule.date).toLocaleDateString('pt-BR');
+    
+    const relatedSchedules = completedSchedules.filter(s => {
+        if (getDate(s.date).toLocaleDateString('pt-BR') !== dateToMatch) {
+            return false;
+        }
+
+        // Agrupa por centro de custo, se o agendamento clicado foi por CC
+        if (clickedSchedule.costCenterCodes && clickedSchedule.costCenterCodes.length > 0) {
+            const clickedCCs = [...clickedSchedule.costCenterCodes].sort().join(',');
+            const currentCCs = s.costCenterCodes ? [...s.costCenterCodes].sort().join(',') : '';
+            if (!currentCCs) return false;
+            return clickedCCs === currentCCs;
+        }
+
+        // Senão, agrupa por responsáveis (apenas para agendamentos que não foram por CC)
+        if (s.costCenterCodes && s.costCenterCodes.length > 0) return false;
+        const clickedUsers = [...clickedSchedule.userIds].sort().join(',');
+        const currentUsers = [...s.userIds].sort().join(',');
+        return clickedUsers === currentUsers;
+    });
+
+    if (relatedSchedules.length === 0) {
+        relatedSchedules.push(clickedSchedule); // Garante que pelo menos o clicado seja processado
+    }
+
+    // 2. Agrega os dados de todos os agendamentos em uma única lista
+    const allResults = relatedSchedules.flatMap(s => s.results || []);
+    
+    const tableData = allResults.map(result => {
+        const asset = assets.find(a => a.id === result.assetId);
+        const currentCC = typeof asset?.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset?.costCenter;
+        return [
+          asset?.name || "Ativo Removido",
+          asset?.tagNumber || "-",
+          result.verified ? "Sim" : "Não",
+          currentCC || "-",
+          result.newCostCenter || "Mantido",
+          result.observations || ""
+        ];
+    });
+
+    // 3. Gera o PDF
+    try {
+      const doc = new jsPDF();
+      let logoData: string | null = null;
+      try {
+        logoData = await getBase64ImageFromURL("/oba.svg");
+      } catch (error) {
+        console.warn("Logo não carregado:", error);
+      }
+
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const mainSchedule = relatedSchedules[0];
+
+      const addHeader = () => {
+        if (logoData) {
+          doc.addImage(logoData, 'PNG', 14, 10, 25, 15);
+        }
+        doc.setFontSize(16);
+        doc.setTextColor(40);
+        doc.text("Relatório de Inventário Agrupado", pageWidth - 14, 18, { align: 'right' });
+        
+        doc.setFontSize(10);
+        doc.setTextColor(80);
+        const dateObj = getDate(mainSchedule.date);
+        doc.text(`Data do Inventário: ${dateObj.toLocaleDateString('pt-BR')}`, pageWidth - 14, 24, { align: 'right' });
+        
+        const responsibles = mainSchedule.userIds.map(uid => users.find(u => u.id === uid)?.name).filter(Boolean).join(", ");
+        doc.text(`Responsáveis: ${responsibles}`, pageWidth - 14, 29, { align: 'right' });
+
+        doc.setDrawColor(200);
+        doc.line(14, 38, pageWidth - 14, 38);
+      };
+
+      addHeader();
+
+      autoTable(doc, {
+        head: [['Ativo', 'Plaqueta', 'Verificado', 'CC Atual', 'Novo CC', 'Observações']],
+        body: tableData,
+        startY: 45,
+        styles: { fontSize: 8, cellPadding: 2 },
+        headStyles: { fillColor: [22, 163, 74], textColor: 255, fontStyle: 'bold' },
+        alternateRowStyles: { fillColor: [240, 253, 244] },
+      });
+
+      doc.save(`relatorio_inventario_${getDate(mainSchedule.date).toISOString().split('T')[0]}.pdf`);
+      toast.success("Relatório PDF agrupado gerado com sucesso!");
+
+    } catch (error) {
+      console.error("Erro ao gerar PDF:", error);
+      toast.error("Erro ao gerar PDF.");
     }
   };
 
@@ -523,8 +873,8 @@ export default function AssetInventoryPage() {
   };
 
   const handleScheduleSubmit = async () => {
-    if (selectedAssetIds.length === 0) {
-      toast.error("Selecione pelo menos um ativo.");
+    if (selectedAssetIds.length === 0 && selectedCostCentersForSchedule.length === 0) {
+      toast.error("Selecione pelo menos um ativo ou centro de custo.");
       return;
     }
     if (selectedUserIds.length === 0) {
@@ -538,9 +888,9 @@ export default function AssetInventoryPage() {
 
     // O ID será gerado automaticamente pelo Firestore
     const newScheduleData = {
-      requesterId: currentUserId,
       requesterId: selectedApproverId || currentUserId,
       assetIds: selectedAssetIds,
+      costCenterCodes: selectedCostCentersForSchedule, // Adiciona o contexto do centro de custo
       userIds: selectedUserIds,
       date: scheduleDate,
       notes,
@@ -557,6 +907,7 @@ export default function AssetInventoryPage() {
     // Reset
     setIsScheduleOpen(false);
     setSelectedAssetIds([]);
+    setSelectedCostCentersForSchedule([]);
     setSelectedUserIds([]);
     setSelectedApproverId("");
     setNotes("");
@@ -628,140 +979,6 @@ export default function AssetInventoryPage() {
       });
 
       doc.save("inventario_ativos.pdf");
-      toast.success("Relatório PDF gerado com sucesso!");
-    } catch (error) {
-      console.error("Erro ao gerar PDF:", error);
-      toast.error("Erro ao gerar PDF.");
-    }
-  };
-
-  const handleExportScheduleResult = async (schedule: InventorySchedule) => {
-    if (!schedule.results) return;
-    
-    try {
-      const doc = new jsPDF();
-      let logoData: string | null = null;
-      try {
-        logoData = await getBase64ImageFromURL("/oba.svg");
-      } catch (error) {
-        console.warn("Logo não carregado:", error);
-      }
-
-      const pageWidth = doc.internal.pageSize.getWidth();
-      const pageHeight = doc.internal.pageSize.getHeight();
-
-      const addHeaderAndWatermark = (data: any) => {
-        // Watermark
-        if (logoData) {
-          doc.saveGraphicsState();
-          doc.setGState(new (doc as any).GState({ opacity: 0.1 }));
-          const wmWidth = 80;
-          const wmHeight = 40;
-          const wmX = (pageWidth - wmWidth) / 2;
-          const wmY = (pageHeight - wmHeight) / 2;
-          doc.addImage(logoData, 'PNG', wmX, wmY, wmWidth, wmHeight);
-          doc.restoreGraphicsState();
-
-          // Header
-          doc.addImage(logoData, 'PNG', 14, 10, 25, 15);
-        }
-
-        doc.setFontSize(16);
-        doc.setTextColor(40);
-        doc.text("Relatório de Inventário Concluído", pageWidth - 14, 18, { align: 'right' });
-        
-        doc.setFontSize(10);
-        doc.setTextColor(80);
-        const dateObj = (schedule.date as any)?.toDate ? (schedule.date as any).toDate() : new Date(schedule.date);
-        doc.text(`Data do Inventário: ${dateObj.toLocaleDateString('pt-BR')}`, pageWidth - 14, 24, { align: 'right' });
-        doc.text(`Aprovado Por: ${schedule.approvedBy || "-"}`, pageWidth - 14, 29, { align: 'right' });
-        const approvedAtObj = (schedule.approvedAt as any)?.toDate ? (schedule.approvedAt as any).toDate() : (schedule.approvedAt ? new Date(schedule.approvedAt) : null);
-        doc.text(`Data Aprovação: ${approvedAtObj ? approvedAtObj.toLocaleString('pt-BR') : "-"}`, pageWidth - 14, 34, { align: 'right' });
-
-        doc.setDrawColor(200);
-        doc.line(14, 38, pageWidth - 14, 38);
-      };
-
-      const tableData = schedule.results.map(result => {
-        const asset = assets.find(a => a.id === result.assetId);
-        return [
-          asset?.name || "Ativo Removido",
-          asset?.tagNumber || "-",
-          result.verified ? "Sim" : "Não",
-          result.newCostCenter || "Mantido"
-        ];
-      });
-
-      autoTable(doc, {
-        head: [["Ativo", "Plaqueta", "Verificado", "Novo Centro de Custo"]],
-        body: tableData,
-        startY: 45,
-        didDrawPage: addHeaderAndWatermark,
-        styles: { fontSize: 9, cellPadding: 3 },
-        headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold' }, // Blue-600
-        alternateRowStyles: { fillColor: [239, 246, 255] },
-        margin: { top: 45 }
-      });
-
-      // Signatures
-      const finalY = (doc as any).lastAutoTable.finalY + 40;
-      
-      doc.setDrawColor(0);
-      // Linhas de assinatura (3 colunas)
-      doc.line(15, finalY, 65, finalY);   // Solicitante
-      doc.line(80, finalY, 130, finalY);  // Responsável
-      doc.line(145, finalY, 195, finalY); // Aprovador
-
-      // Assinatura do Solicitante
-      // O solicitante no PDF será sempre o usuário logado que está gerando o relatório
-      const requester = users.find(u => String(u.id) === String(currentUserId)) || user;
-
-      if (requester?.signature && requester.signature.startsWith('data:image')) {
-        try {
-          doc.addImage(requester.signature, 'PNG', 20, finalY - 25, 40, 20);
-        } catch (e) { console.warn("Erro ao adicionar assinatura do solicitante", e); }
-      }
-
-      // Assinatura do Responsável (pega o primeiro se houver múltiplos)
-      const responsibleId = schedule.userIds[0];
-      const responsible = users.find(u => String(u.id) === String(responsibleId));
-      if (responsible?.signature && responsible.signature.startsWith('data:image')) {
-        try {
-          doc.addImage(responsible.signature, 'PNG', 85, finalY - 25, 40, 20);
-        } catch (e) { console.warn("Erro ao adicionar assinatura do responsável", e); }
-      }
-      
-      // Assinatura do Aprovador
-      const approver = users.find(u => u.name === schedule.approvedBy);
-      if (approver?.signature && approver.signature.startsWith('data:image')) {
-        try {
-          doc.addImage(approver.signature, 'PNG', 150, finalY - 25, 40, 20);
-        } catch (e) { console.warn("Erro ao adicionar assinatura do aprovador", e); }
-      }
-      
-      doc.setFontSize(9);
-      doc.setTextColor(0);
-      doc.text("Solicitante", 40, finalY + 5, { align: 'center' });
-      doc.text("Responsável", 105, finalY + 5, { align: 'center' });
-      doc.text("Aprovador", 170, finalY + 5, { align: 'center' });
-      doc.text(requester?.name || "N/A", 40, finalY + 10, { align: 'center' });
-      doc.text(responsible?.name || "N/A", 105, finalY + 10, { align: 'center' });
-      doc.text(schedule.approvedBy || "N/A", 170, finalY + 10, { align: 'center' });
-
-      doc.setFontSize(7);
-      doc.setTextColor(100);
-      
-      const formatDate = (d: any) => {
-        if (!d) return "-";
-        const dateObj = d?.toDate ? d.toDate() : new Date(d);
-        return dateObj.toLocaleString('pt-BR');
-      };
-
-      doc.text(formatDate(schedule.createdAt || schedule.date), 40, finalY + 15, { align: 'center' });
-      doc.text(formatDate(schedule.approvedAt), 105, finalY + 15, { align: 'center' }); // Responsável usa data de aprovação como conclusão
-      doc.text(formatDate(schedule.approvedAt), 170, finalY + 15, { align: 'center' });
-
-      doc.save(`inventario_concluido_${dateObj.toISOString().split('T')[0]}.pdf`);
       toast.success("Relatório PDF gerado com sucesso!");
     } catch (error) {
       console.error("Erro ao gerar PDF:", error);
@@ -950,229 +1167,305 @@ export default function AssetInventoryPage() {
         </Card>
       )}
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Buscar por nome, plaqueta ou número do ativo..."
-                className="pl-8"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
-            </div>
-            <div className="w-[240px]">
-              <Select value={selectedAssetClass} onValueChange={setSelectedAssetClass}>
-                <SelectTrigger className="bg-blue-50 border-blue-200 text-blue-700">
-                  <SelectValue placeholder="Filtrar por Classe" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todas as Classes</SelectItem>
-                  {assetClasses.map((cls: any) => (
-                    <SelectItem key={cls.id} value={cls.name}>{cls.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="w-[240px]">
-              <Select value={selectedCostCenter} onValueChange={setSelectedCostCenter}>
-                <SelectTrigger className="bg-green-50 border-green-200 text-green-700">
-                  <SelectValue placeholder="Filtrar por Centro de Custo" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos os Centros de Custo</SelectItem>
-                  {costCenters.map((cc: any) => (
-                    <SelectItem key={cc.id} value={cc.code}>
-                      {cc.code} - {cc.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex items-center space-x-2 bg-orange-50 px-3 py-2 rounded-md border border-orange-200 text-orange-800">
-              <Checkbox 
-                id="show-obs" 
-                checked={showOnlyWithObs}
-                onCheckedChange={(checked) => setShowOnlyWithObs(!!checked)}
-                className="border-orange-400 data-[state=checked]:bg-orange-600 data-[state=checked]:text-white"
-              />
-              <label 
-                htmlFor="show-obs" 
-                className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer whitespace-nowrap"
-              >
-                Com Obs.
-              </label>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <div className="flex justify-center p-8">
-              <Loader2 className="h-8 w-8 animate-spin" />
-            </div>
-          ) : (
-            <>
-            <Table className="text-base">
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-[50px]">
-                    <Checkbox 
-                      checked={isAllSelected}
-                      onCheckedChange={toggleAllAssets}
-                    />
-                  </TableHead>
-                  <TableHead className="text-base w-[90px]">Plaqueta</TableHead>
-                  <TableHead className="text-base">Nome</TableHead>
-                  <TableHead className="text-base w-[120px]">Centro de Custo</TableHead>
-                  <TableHead className="text-base">Inventariado</TableHead>
-                  <TableHead className="text-base">Obs</TableHead>
-                  <TableHead className="text-base">Responsável</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {paginatedAssets?.map((asset) => {
-                  const activeSchedule = getActiveSchedule(asset.id);
-                  const lastInventory = getLastInventory(asset.id);
-                  const isAssignedToMe = activeSchedule && activeSchedule.status === 'pending' && currentUserId && activeSchedule.userIds.some(uid => String(uid) === String(currentUserId));
-                  
-                  return (
-                  <TableRow 
-                    key={asset.id} 
-                    className={
-                      selectedAssetIds.includes(asset.id) 
-                        ? "bg-blue-50" 
-                        : (activeSchedule 
-                            ? (isAssignedToMe ? "bg-orange-50 border-l-4 border-l-orange-500 hover:bg-orange-100" : "opacity-50 bg-gray-100 pointer-events-none") 
-                            : "")
-                    }
-                    title={activeSchedule && !isAssignedToMe ? "Agendado para outro usuário" : ""}
+      <Tabs defaultValue="by-asset" className="w-full">
+        <TabsList className="grid w-full grid-cols-2">
+          <TabsTrigger value="by-asset">Agendamento por Ativo</TabsTrigger>
+          <TabsTrigger value="by-cost-center">Agendamento por Centro de Custo</TabsTrigger>
+        </TabsList>
+        <TabsContent value="by-asset">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Buscar por nome, plaqueta ou número do ativo..."
+                    className="pl-8"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                  />
+                </div>
+                <div className="w-[240px]">
+                  <Select value={selectedAssetClass} onValueChange={setSelectedAssetClass}>
+                    <SelectTrigger className="bg-blue-50 border-blue-200 text-blue-700">
+                      <SelectValue placeholder="Filtrar por Classe" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Todas as Classes</SelectItem>
+                      {assetClasses.map((cls: any) => (
+                        <SelectItem key={cls.id} value={cls.name}>{cls.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="w-[240px]">
+                  <Select value={selectedCostCenter} onValueChange={setSelectedCostCenter}>
+                    <SelectTrigger className="bg-green-50 border-green-200 text-green-700">
+                      <SelectValue placeholder="Filtrar por Centro de Custo" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Todos os Centros de Custo</SelectItem>
+                      {costCenters.map((cc: any) => (
+                        <SelectItem key={cc.id} value={cc.code}>
+                          {cc.code} - {cc.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center space-x-2 bg-orange-50 px-3 py-2 rounded-md border border-orange-200 text-orange-800">
+                  <Checkbox 
+                    id="show-obs" 
+                    checked={showOnlyWithObs}
+                    onCheckedChange={(checked) => setShowOnlyWithObs(!!checked)}
+                    className="border-orange-400 data-[state=checked]:bg-orange-600 data-[state=checked]:text-white"
+                  />
+                  <label 
+                    htmlFor="show-obs" 
+                    className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer whitespace-nowrap"
                   >
-                    <TableCell>
-                      <Checkbox 
-                        checked={selectedAssetIds.includes(asset.id)}
-                        onCheckedChange={() => toggleAssetSelection(asset.id)}
-                        disabled={!!activeSchedule}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex flex-col">
-                        <span className="text-base">{asset.tagNumber || "-"}</span>
-                        <span className="text-xs font-mono text-muted-foreground">{asset.assetNumber || "-"}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="font-medium text-base">{asset.name}</div>
-                      <div className="text-sm text-muted-foreground truncate max-w-[300px]">{asset.description}</div>
-                    </TableCell>
-                    <TableCell className="text-base">
-                      {(() => {
-                         const ccCode = typeof asset.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset.costCenter;
-                         const cc = costCenters.find(c => c.code === ccCode);
-                         return (
-                           <div className="flex flex-col">
-                             <span>{cc ? `${cc.code} - ${cc.name}` : (ccCode || "-")}</span>
-                             {cc?.responsible && (
-                               <span className="text-sm text-muted-foreground">{cc.responsible}</span>
-                             )}
-                           </div>
-                         );
-                      })()}
-                    </TableCell>
-                    <TableCell>
-                      {(() => {
-                        const result = lastInventory?.results?.find(r => r.assetId === asset.id);
-                        if (result?.verified) {
-                          return (
-                            <div className="flex flex-col">
-                              <span className="text-sm font-medium text-green-600 flex items-center gap-1">
-                                <CheckCircle2 className="w-3 h-3" /> Sim
-                              </span>
-                              <span className="text-xs text-muted-foreground">
-                                {lastInventory.approvedAt 
-                                  ? getDate(lastInventory.approvedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
-                                  : getDate(lastInventory.date).toLocaleDateString('pt-BR')}
+                    Com Obs.
+                  </label>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {isLoading ? (
+                <div className="flex justify-center p-8">
+                  <Loader2 className="h-8 w-8 animate-spin" />
+                </div>
+              ) : (
+                <>
+                <Table className="text-base">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[50px]">
+                        <Checkbox 
+                          checked={isAllSelected}
+                          onCheckedChange={toggleAllAssets}
+                        />
+                      </TableHead>
+                      <TableHead className="text-base w-[90px]">Plaqueta</TableHead>
+                      <TableHead className="text-base">Nome</TableHead>
+                      <TableHead className="text-base w-[120px]">Centro de Custo</TableHead>
+                      <TableHead className="text-base">Inventariado</TableHead>
+                      <TableHead className="text-base">Obs</TableHead>
+                      <TableHead className="text-base">Responsável</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {paginatedAssets?.map((asset) => {
+                      const activeSchedule = getActiveSchedule(asset.id);
+                      const lastInventory = getLastInventory(asset.id);
+                      const isAssignedToMe = activeSchedule && activeSchedule.status === 'pending' && currentUserId && activeSchedule.userIds.some(uid => String(uid) === String(currentUserId));
+                      
+                      return (
+                      <TableRow 
+                        key={asset.id} 
+                        className={
+                          selectedAssetIds.includes(asset.id) 
+                            ? "bg-blue-50" 
+                            : (activeSchedule 
+                                ? (isAssignedToMe ? "bg-orange-50 border-l-4 border-l-orange-500 hover:bg-orange-100" : "opacity-50 bg-gray-100 pointer-events-none") 
+                                : "")
+                        }
+                        title={activeSchedule && !isAssignedToMe ? "Agendado para outro usuário" : ""}
+                      >
+                        <TableCell>
+                          <Checkbox 
+                            checked={selectedAssetIds.includes(asset.id)}
+                            onCheckedChange={() => toggleAssetSelection(asset.id)}
+                            disabled={!!activeSchedule}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-col">
+                            <span className="text-base">{asset.tagNumber || "-"}</span>
+                            <span className="text-xs font-mono text-muted-foreground">{asset.assetNumber || "-"}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="font-medium text-base">{asset.name}</div>
+                          <div className="text-sm text-muted-foreground truncate max-w-[300px]">{asset.description}</div>
+                        </TableCell>
+                        <TableCell className="text-base">
+                          {(() => {
+                             const ccCode = typeof asset.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset.costCenter;
+                             const cc = costCenters.find(c => c.code === ccCode);
+                             return (
+                               <div className="flex flex-col">
+                                 <span>{cc ? `${cc.code} - ${cc.name}` : (ccCode || "-")}</span>
+                                 {cc?.responsible && (
+                                   <span className="text-sm text-muted-foreground">{cc.responsible}</span>
+                                 )}
+                               </div>
+                             );
+                          })()}
+                        </TableCell>
+                        <TableCell>
+                          {(() => {
+                            const result = lastInventory?.results?.find(r => r.assetId === asset.id);
+                            if (result?.verified) {
+                              return (
+                                <div className="flex flex-col">
+                                  <span className="text-sm font-medium text-green-600 flex items-center gap-1">
+                                    <CheckCircle2 className="w-3 h-3" /> Sim
+                                  </span>
+                                  <span className="text-xs text-muted-foreground">
+                                    {lastInventory.approvedAt 
+                                      ? getDate(lastInventory.approvedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+                                      : getDate(lastInventory.date).toLocaleDateString('pt-BR')}
+                                  </span>
+                                </div>
+                              );
+                            }
+                            return <span className="text-sm text-muted-foreground">Não</span>;
+                          })()}
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground max-w-[150px] truncate" title={lastInventory?.results?.find(r => r.assetId === asset.id)?.observations || ""}>
+                          {lastInventory?.results?.find(r => r.assetId === asset.id)?.observations || "-"}
+                        </TableCell>
+                        <TableCell>
+                          {activeSchedule ? (
+                            <div className="flex flex-col gap-1">
+                              {activeSchedule.userIds.map(uid => {
+                                const responsibleUser = users.find(u => String(u.id) === String(uid));
+                                return (
+                                  <span key={uid} className="text-sm text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 w-fit whitespace-nowrap">
+                                    {responsibleUser?.name || "Usuário..."}
+                                  </span>
+                                );
+                              })}
+                              <span className="text-sm text-muted-foreground mt-0.5">
+                                {(() => {
+                                    const d = (activeSchedule.date as any)?.toDate ? (activeSchedule.date as any).toDate() : new Date(activeSchedule.date);
+                                    return d.toLocaleDateString('pt-BR');
+                                })()}
                               </span>
                             </div>
-                          );
-                        }
-                        return <span className="text-sm text-muted-foreground">Não</span>;
-                      })()}
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground max-w-[150px] truncate" title={lastInventory?.results?.find(r => r.assetId === asset.id)?.observations || ""}>
-                      {lastInventory?.results?.find(r => r.assetId === asset.id)?.observations || "-"}
-                    </TableCell>
-                    <TableCell>
-                      {activeSchedule ? (
-                        <div className="flex flex-col gap-1">
-                          {activeSchedule.userIds.map(uid => {
-                            const responsibleUser = users.find(u => String(u.id) === String(uid));
-                            return (
-                              <span key={uid} className="text-sm text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 w-fit whitespace-nowrap">
-                                {responsibleUser?.name || "Usuário..."}
-                              </span>
-                            );
-                          })}
-                          <span className="text-sm text-muted-foreground mt-0.5">
-                            {(() => {
-                                const d = (activeSchedule.date as any)?.toDate ? (activeSchedule.date as any).toDate() : new Date(activeSchedule.date);
-                                return d.toLocaleDateString('pt-BR');
-                            })()}
+                          ) : (
+                            <span className="text-sm text-muted-foreground">-</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    )})}
+                    {(!filteredAssets || filteredAssets.length === 0) && (
+                      <TableRow>
+                        <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                          Nenhum ativo encontrado.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+                
+                {filteredAssets && filteredAssets.length > 0 && !isFiltering && (
+                  <div className="mt-4">
+                    <Pagination>
+                      <PaginationContent>
+                        <PaginationItem>
+                          <PaginationPrevious
+                            href="#"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              setCurrentPage((p) => Math.max(1, p - 1));
+                            }}
+                            className={currentPage === 1 ? "pointer-events-none opacity-50" : ""}
+                          />
+                        </PaginationItem>
+                        <PaginationItem>
+                          <span className="text-sm text-muted-foreground mx-4">
+                            Página {currentPage} de {totalPages}
                           </span>
-                        </div>
-                      ) : (
-                        <span className="text-sm text-muted-foreground">-</span>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                )})}
-                {(!filteredAssets || filteredAssets.length === 0) && (
-                  <TableRow>
-                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                      Nenhum ativo encontrado.
-                    </TableCell>
-                  </TableRow>
+                        </PaginationItem>
+                        <PaginationItem>
+                          <PaginationNext
+                            href="#"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              setCurrentPage((p) => Math.min(totalPages, p + 1));
+                            }}
+                            className={currentPage === totalPages ? "pointer-events-none opacity-50" : ""}
+                          />
+                        </PaginationItem>
+                      </PaginationContent>
+                    </Pagination>
+                  </div>
                 )}
-              </TableBody>
-            </Table>
-            
-            {filteredAssets && filteredAssets.length > 0 && !isFiltering && (
-              <div className="mt-4">
-                <Pagination>
-                  <PaginationContent>
-                    <PaginationItem>
-                      <PaginationPrevious
-                        href="#"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          setCurrentPage((p) => Math.max(1, p - 1));
-                        }}
-                        className={currentPage === 1 ? "pointer-events-none opacity-50" : ""}
-                      />
-                    </PaginationItem>
-                    <PaginationItem>
-                      <span className="text-sm text-muted-foreground mx-4">
-                        Página {currentPage} de {totalPages}
-                      </span>
-                    </PaginationItem>
-                    <PaginationItem>
-                      <PaginationNext
-                        href="#"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          setCurrentPage((p) => Math.min(totalPages, p + 1));
-                        }}
-                        className={currentPage === totalPages ? "pointer-events-none opacity-50" : ""}
-                      />
-                    </PaginationItem>
-                  </PaginationContent>
-                </Pagination>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+        <TabsContent value="by-cost-center">
+          <Card>
+            <CardHeader>
+              <CardTitle>Agendar Inventário por Centro de Custo</CardTitle>
+              <CardDescription>
+                Selecione um ou mais centros de custo para incluir todos os seus ativos em um agendamento de inventário.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex justify-end mb-4">
+                  <Button 
+                      onClick={handleScheduleByCostCenter} 
+                      disabled={selectedCostCentersForSchedule.length === 0}
+                      className="bg-blue-600 hover:bg-blue-700"
+                  >
+                      <CalendarIcon className="mr-2 h-4 w-4" />
+                      Agendar por Centro de Custo ({selectedCostCentersForSchedule.length})
+                  </Button>
               </div>
-            )}
-            </>
-          )}
-        </CardContent>
-      </Card>
+              <Table>
+                  <TableHeader>
+                      <TableRow>
+                          <TableHead className="w-[50px]">
+                              <Checkbox 
+                                  checked={isAllCostCentersSelected}
+                                  onCheckedChange={toggleAllCostCenters}
+                              />
+                          </TableHead>
+                          <TableHead>Código</TableHead>
+                          <TableHead>Nome</TableHead>
+                          <TableHead>Departamento</TableHead>
+                          <TableHead>Responsável</TableHead>
+                          <TableHead>Última Solicitação</TableHead>
+                          <TableHead>Última Realização</TableHead>
+                      </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                      {costCenters.map(cc => {
+                          const lastSchedule = getLastScheduleForCC(cc.code);
+                          const requestDate = lastSchedule?.createdAt ? getDate(lastSchedule.createdAt).toLocaleDateString('pt-BR') : "-";
+                          const executionDate = lastSchedule?.status === 'completed' && lastSchedule.approvedAt 
+                              ? getDate(lastSchedule.approvedAt).toLocaleDateString('pt-BR') 
+                              : (lastSchedule ? `Agendado: ${getDate(lastSchedule.date).toLocaleDateString('pt-BR')}` : "-");
+
+                          return (
+                          <TableRow 
+                              key={cc.id}
+                              className={selectedCostCentersForSchedule.includes(cc.code) ? "bg-blue-50" : ""}
+                          >
+                              <TableCell>
+                                  <Checkbox 
+                                      checked={selectedCostCentersForSchedule.includes(cc.code)}
+                                      onCheckedChange={() => toggleCostCenterSelection(cc.code)}
+                                  />
+                              </TableCell>
+                              <TableCell>{cc.code}</TableCell>
+                              <TableCell>{cc.name}</TableCell>
+                              <TableCell>{cc.department}</TableCell>
+                              <TableCell>{cc.responsible || "-"}</TableCell>
+                              <TableCell>{requestDate}</TableCell>
+                              <TableCell>{executionDate}</TableCell>
+                          </TableRow>
+                      )})}
+                  </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
 
       {/* Histórico de Inventários Concluídos */}
       <Card>
@@ -1196,7 +1489,6 @@ export default function AssetInventoryPage() {
                 <TableHead className="text-lg">Responsáveis</TableHead>
                 <TableHead className="text-lg">Aprovado Por</TableHead>
                 <TableHead className="text-lg">Data Aprovação</TableHead>
-                <TableHead className="text-right text-lg">Ações</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1221,17 +1513,11 @@ export default function AssetInventoryPage() {
                       const d = (schedule.approvedAt as any)?.toDate ? (schedule.approvedAt as any).toDate() : new Date(schedule.approvedAt);
                       return d.toLocaleString('pt-BR');
                   })() : "-"}</TableCell>
-                  <TableCell className="text-right">
-                    <Button variant="outline" className="h-9 text-base px-4" onClick={() => handleExportScheduleResult(schedule)}>
-                      <Download className="w-4 h-4 mr-2" />
-                      Relatório
-                    </Button>
-                  </TableCell>
                 </TableRow>
               ))}
               {completedSchedules.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground text-lg">
+                  <TableCell colSpan={4} className="text-center py-8 text-muted-foreground text-lg">
                     Nenhum inventário concluído.
                   </TableCell>
                 </TableRow>
@@ -1241,6 +1527,16 @@ export default function AssetInventoryPage() {
         </CardContent>
         )}
       </Card>
+
+      <NewAssetFromInventoryDialog
+        open={isNewAssetDialogOpen}
+        onOpenChange={setIsNewAssetDialogOpen}
+        initialCode={newAssetInitialCode}
+        costCenters={costCenters}
+        assetClasses={assetClasses}
+        defaultCostCenter={performingSchedule?.costCenterCodes?.[0]}
+        onSuccess={handleNewAssetCreated}
+      />
 
       {/* Diálogo para Realizar Inventário */}
       <Dialog open={!!performingSchedule} onOpenChange={(open) => !open && setPerformingSchedule(null)}>

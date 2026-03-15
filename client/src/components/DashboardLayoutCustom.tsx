@@ -45,7 +45,9 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [myPendingSchedules, setMyPendingSchedules] = useState<any[]>([]);
   const [pendingInventoryApprovalCount, setPendingInventoryApprovalCount] = useState(0);
   const [projects, setProjects] = useState<any[]>([]);
+  const [costCenters, setCostCenters] = useState<any[]>([]);
   const [viewProject, setViewProject] = useState<any | null>(null);
+  const [pendingMovements, setPendingMovements] = useState<any[]>([]);
   
   // Garante a leitura do ID independente do formato do objeto user
   const userId = (user as any)?.id || (user as any)?.openId || (user as any)?.uid || (user as any)?.sub;
@@ -54,6 +56,14 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     const unsubscribe = onSnapshot(collection(db, "projects"), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setProjects(data);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "cost_centers"), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setCostCenters(data);
     });
     return () => unsubscribe();
   }, []);
@@ -90,6 +100,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
   const prevInventoryCountRef = useRef(0);
   const prevInventoryApprovalCountRef = useRef(0);
+  const prevPendingMovementsCountRef = useRef(0);
 
   useEffect(() => {
     if (!userId) return;
@@ -132,6 +143,35 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     return () => unsubscribe();
   }, [userId]);
 
+  useEffect(() => {
+    if (!userId || !costCenters.length || !user) return;
+
+    const q = collection(db, "asset_movements");
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+        const movements = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        
+        const myPendingMovements = movements.filter(mov => {
+            if (mov.status !== 'pending_approval' || mov.type !== 'transfer_cost_center') return false;
+            
+            const destCC = costCenters.find(cc => cc.code === mov.destinationCostCenter);
+            if (destCC) {
+                return destCC.responsible === user.name || destCC.responsibleEmail === user.email;
+            }
+            return false;
+        });
+
+        const currentCount = myPendingMovements.length;
+        if (currentCount > prevPendingMovementsCountRef.current) {
+            const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3");
+            audio.play().catch(e => console.log("Audio play failed", e));
+            toast.info(`Você tem ${currentCount} movimentações de ativos pendentes de aprovação.`);
+        }
+        prevPendingMovementsCountRef.current = currentCount;
+        setPendingMovements(myPendingMovements);
+    });
+    return () => unsubscribe();
+  }, [userId, user, costCenters]);
+
   const handleApprove = async (project: any) => {
     let nextStatus = '';
     if (project.status === 'aguardando_classificacao') nextStatus = 'aguardando_engenharia';
@@ -169,7 +209,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     toast.success(`Projeto ${project.name} rejeitado.`);
   };
 
-  const totalNotifications = pendingProjects.length + pendingInventoryCount + pendingInventoryApprovalCount;
+  const totalNotifications = pendingProjects.length + pendingInventoryCount + pendingInventoryApprovalCount + pendingMovements.length;
 
   useEffect(() => {
     const baseTitle = "Control Obra/Ativos";
@@ -253,7 +293,12 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             const Icon = item.icon;
             const isActive = location === item.path;
             const isInventory = item.path === '/inventory';
-            const hasNotification = isInventory && (pendingInventoryCount > 0 || pendingInventoryApprovalCount > 0);
+            const inventoryNotifCount = pendingInventoryCount + pendingInventoryApprovalCount;
+            const isMovements = item.id === 'asset-movements';
+            const movementNotifCount = pendingMovements.length;
+
+            const hasNotification = (isInventory && inventoryNotifCount > 0) || (isMovements && movementNotifCount > 0);
+            const notificationCount = isInventory ? inventoryNotifCount : movementNotifCount;
 
             return (
               <button
@@ -267,9 +312,9 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
               >
                 <Icon size={20} className={hasNotification ? "text-orange-400 animate-pulse" : ""} />
                 {sidebarOpen && <span className={hasNotification ? "text-orange-400 font-bold animate-pulse" : ""}>{item.label}</span>}
-                {sidebarOpen && isInventory && (pendingInventoryCount > 0 || pendingInventoryApprovalCount > 0) && (
+                {sidebarOpen && hasNotification && (
                   <span className="ml-auto bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full animate-pulse">
-                    {pendingInventoryCount + pendingInventoryApprovalCount}
+                    {notificationCount}
                   </span>
                 )}
               </button>
@@ -399,6 +444,27 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                   <DialogTitle>Notificações ({totalNotifications})</DialogTitle>
                 </DialogHeader>
                 <div className="space-y-4 mt-4">
+                  {/* Seção de Movimentação de Ativos */}
+                  {pendingMovements.length > 0 && (
+                    <div className="bg-cyan-50 border border-cyan-200 rounded-lg p-4">
+                      <div className="flex items-center gap-2 text-cyan-800 font-semibold mb-2">
+                        <ArrowRightLeft size={18} />
+                        <span>Aprovação de Movimentação</span>
+                      </div>
+                      <p className="text-sm text-cyan-700 mb-3">
+                        Você tem <strong>{pendingMovements.length}</strong> movimentação(ões) de ativo aguardando sua aprovação.
+                      </p>
+                      <div className="flex justify-end">
+                        <Button 
+                          size="sm" 
+                          className="bg-cyan-600 hover:bg-cyan-700 text-white w-full"
+                          onClick={() => setLocation('/asset-movements')}
+                        >
+                          Ir para Movimentações
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                   {/* Seção de Aprovação de Inventário */}
                   {pendingInventoryApprovalCount > 0 && (
                     <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
