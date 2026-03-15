@@ -77,6 +77,8 @@ function NewAssetFromInventoryDialog({
   assetClasses,
   defaultCostCenter,
   onSuccess,
+  onStartScan,
+  scannedInvoiceKey,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -85,6 +87,8 @@ function NewAssetFromInventoryDialog({
   assetClasses: any[];
   defaultCostCenter?: string;
   onSuccess: (newAsset: any) => void;
+  onStartScan: () => void;
+  scannedInvoiceKey: string;
 }) {
   const [nextAssetNumber, setNextAssetNumber] = useState("");
   const [formData, setFormData] = useState({
@@ -118,6 +122,12 @@ function NewAssetFromInventoryDialog({
     }
   }, [open, defaultCostCenter]);
 
+  useEffect(() => {
+    if (scannedInvoiceKey) {
+      setFormData(prev => ({ ...prev, invoiceNumber: scannedInvoiceKey }));
+    }
+  }, [scannedInvoiceKey]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name || !formData.assetClass || !formData.costCenter) {
@@ -149,7 +159,7 @@ function NewAssetFromInventoryDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>Ativo não encontrado na base</DialogTitle>
           <DialogDescription>
@@ -157,7 +167,7 @@ function NewAssetFromInventoryDialog({
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4 py-4">
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <Label>Nome do Ativo</Label>
               <Input value={formData.name} onChange={e => setFormData(prev => ({...prev, name: e.target.value}))} required placeholder="Ex: Notebook Dell" />
@@ -181,7 +191,12 @@ function NewAssetFromInventoryDialog({
             </div>
             <div>
               <Label>Nota Fiscal</Label>
-              <Input value={formData.invoiceNumber} onChange={e => setFormData(prev => ({...prev, invoiceNumber: e.target.value}))} placeholder="Número da NF" />
+              <div className="flex items-center gap-2">
+                <Input value={formData.invoiceNumber} onChange={e => setFormData(prev => ({...prev, invoiceNumber: e.target.value}))} placeholder="Chave de acesso" />
+                <Button type="button" variant="outline" size="icon" onClick={onStartScan}>
+                  <QrCode className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
             <div>
               <Label>Centro de Custo</Label>
@@ -234,6 +249,8 @@ export default function AssetInventoryPage() {
   const [executionData, setExecutionData] = useState<Record<string, { verified: boolean; costCenter: string; observations: string }>>({});
   const [isNewAssetDialogOpen, setIsNewAssetDialogOpen] = useState(false);
   const [newAssetInitialCode, setNewAssetInitialCode] = useState("");
+  const [isInvoiceScanning, setIsInvoiceScanning] = useState(false);
+  const [scannedInvoiceKey, setScannedInvoiceKey] = useState("");
   const [selectedForApproval, setSelectedForApproval] = useState<string[]>([]);
   const [selectedCostCentersForSchedule, setSelectedCostCentersForSchedule] = useState<string[]>([]);
 
@@ -423,9 +440,6 @@ export default function AssetInventoryPage() {
   }, [isScheduleOpen, currentUserId, selectedAssetIds, selectedCostCentersForSchedule, assets, costCenters, users]);
 
   const handleNewAssetCreated = (newAsset: any) => {
-    // Add the new asset to the local state so it's available immediately
-    setAssets(prev => [...prev, newAsset]);
-
     // Add it to the current inventory execution
     const currentCC = typeof newAsset.costCenter === 'object' && newAsset.costCenter ? (newAsset.costCenter as any).code : newAsset.costCenter;
     setExecutionData(prev => ({
@@ -654,112 +668,13 @@ export default function AssetInventoryPage() {
     setScanInput("");
   };
 
-  const handleExportScheduleResult = async (clickedSchedule: InventorySchedule) => {
-    // 1. Encontra todos os agendamentos relacionados para agrupar no relatório
-    const dateToMatch = getDate(clickedSchedule.date).toLocaleDateString('pt-BR');
-    
-    const relatedSchedules = completedSchedules.filter(s => {
-        if (getDate(s.date).toLocaleDateString('pt-BR') !== dateToMatch) {
-            return false;
-        }
-
-        // Agrupa por centro de custo, se o agendamento clicado foi por CC
-        if (clickedSchedule.costCenterCodes && clickedSchedule.costCenterCodes.length > 0) {
-            const clickedCCs = [...clickedSchedule.costCenterCodes].sort().join(',');
-            const currentCCs = s.costCenterCodes ? [...s.costCenterCodes].sort().join(',') : '';
-            if (!currentCCs) return false;
-            return clickedCCs === currentCCs;
-        }
-
-        // Senão, agrupa por responsáveis (apenas para agendamentos que não foram por CC)
-        if (s.costCenterCodes && s.costCenterCodes.length > 0) return false;
-        const clickedUsers = [...clickedSchedule.userIds].sort().join(',');
-        const currentUsers = [...s.userIds].sort().join(',');
-        return clickedUsers === currentUsers;
-    });
-
-    if (relatedSchedules.length === 0) {
-        relatedSchedules.push(clickedSchedule); // Garante que pelo menos o clicado seja processado
-    }
-
-    // 2. Agrega os dados de todos os agendamentos em uma única lista
-    const allResults = relatedSchedules.flatMap(s => s.results || []);
-    
-    const tableData = allResults.map(result => {
-        const asset = assets.find(a => a.id === result.assetId);
-        const currentCC = typeof asset?.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset?.costCenter;
-        return [
-          asset?.name || "Ativo Removido",
-          asset?.tagNumber || "-",
-          result.verified ? "Sim" : "Não",
-          currentCC || "-",
-          result.newCostCenter || "Mantido",
-          result.observations || ""
-        ];
-    });
-
-    // 3. Gera o PDF
-    try {
-      const doc = new jsPDF();
-      let logoData: string | null = null;
-      try {
-        logoData = await getBase64ImageFromURL("/oba.svg");
-      } catch (error) {
-        console.warn("Logo não carregado:", error);
-      }
-
-      const pageWidth = doc.internal.pageSize.getWidth();
-      const mainSchedule = relatedSchedules[0];
-
-      const addHeader = () => {
-        if (logoData) {
-          doc.addImage(logoData, 'PNG', 14, 10, 25, 15);
-        }
-        doc.setFontSize(16);
-        doc.setTextColor(40);
-        doc.text("Relatório de Inventário Agrupado", pageWidth - 14, 18, { align: 'right' });
-        
-        doc.setFontSize(10);
-        doc.setTextColor(80);
-        const dateObj = getDate(mainSchedule.date);
-        doc.text(`Data do Inventário: ${dateObj.toLocaleDateString('pt-BR')}`, pageWidth - 14, 24, { align: 'right' });
-        
-        const responsibles = mainSchedule.userIds.map(uid => users.find(u => u.id === uid)?.name).filter(Boolean).join(", ");
-        doc.text(`Responsáveis: ${responsibles}`, pageWidth - 14, 29, { align: 'right' });
-
-        doc.setDrawColor(200);
-        doc.line(14, 38, pageWidth - 14, 38);
-      };
-
-      addHeader();
-
-      autoTable(doc, {
-        head: [['Ativo', 'Plaqueta', 'Verificado', 'CC Atual', 'Novo CC', 'Observações']],
-        body: tableData,
-        startY: 45,
-        styles: { fontSize: 8, cellPadding: 2 },
-        headStyles: { fillColor: [22, 163, 74], textColor: 255, fontStyle: 'bold' },
-        alternateRowStyles: { fillColor: [240, 253, 244] },
-      });
-
-      doc.save(`relatorio_inventario_${getDate(mainSchedule.date).toISOString().split('T')[0]}.pdf`);
-      toast.success("Relatório PDF agrupado gerado com sucesso!");
-
-    } catch (error) {
-      console.error("Erro ao gerar PDF:", error);
-      toast.error("Erro ao gerar PDF.");
-    }
-  };
-
-  const startScanning = () => {
-    setIsScanning(true);
-  };
-
   useEffect(() => {
     let stream: MediaStream | null = null;
     let interval: NodeJS.Timeout;
 
-    if (isScanning) {
+    const isAnyScanning = isScanning || isInvoiceScanning;
+
+    if (isAnyScanning) {
       navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
         .then(s => {
           stream = s;
@@ -768,7 +683,6 @@ export default function AssetInventoryPage() {
             videoRef.current.play().catch(console.error);
           }
 
-          // Tenta usar API nativa de detecção se disponível
           if ('BarcodeDetector' in window) {
              try {
                  const detector = new (window as any).BarcodeDetector({ formats: ['qr_code', 'code_128', 'ean_13', 'data_matrix'] });
@@ -777,9 +691,22 @@ export default function AssetInventoryPage() {
                         try {
                             const barcodes = await detector.detect(videoRef.current);
                             if (barcodes.length > 0) {
-                                setScanInput(barcodes[0].rawValue);
-                                setIsScanning(false);
-                                toast.success("Código lido!");
+                                const rawValue = barcodes[0].rawValue;
+                                if (isScanning) {
+                                    setScanInput(rawValue);
+                                    setIsScanning(false);
+                                    toast.success("Código do ativo lido!");
+                                } else if (isInvoiceScanning) {
+                                    const match = rawValue.match(/\d{44}/);
+                                    if (match) {
+                                        setScannedInvoiceKey(match[0]);
+                                        toast.success("Chave da NF-e lida com sucesso!");
+                                    } else {
+                                        setScannedInvoiceKey(rawValue);
+                                        toast.success("Código de barras lido!");
+                                    }
+                                    setIsInvoiceScanning(false);
+                                }
                             }
                         } catch (e) {}
                     }
@@ -789,8 +716,9 @@ export default function AssetInventoryPage() {
         })
         .catch(err => {
           console.error("Erro câmera", err);
-          toast.error("Erro ao acessar câmera. Verifique as permissões.");
+          toast.error("Erro ao acessar câmera. Verifique as permissões do navegador.");
           setIsScanning(false);
+          setIsInvoiceScanning(false);
         });
     }
 
@@ -800,7 +728,11 @@ export default function AssetInventoryPage() {
       }
       if (interval) clearInterval(interval);
     };
-  }, [isScanning]);
+  }, [isScanning, isInvoiceScanning]);
+
+  const startScanning = () => {
+    setIsScanning(true);
+  };
 
   const handleCompleteInventory = async (scheduleId: string) => {
     // Transforma os dados de execução em resultados para salvar
@@ -979,6 +911,140 @@ export default function AssetInventoryPage() {
       });
 
       doc.save("inventario_ativos.pdf");
+      toast.success("Relatório PDF gerado com sucesso!");
+    } catch (error) {
+      console.error("Erro ao gerar PDF:", error);
+      toast.error("Erro ao gerar PDF.");
+    }
+  };
+
+  const handleExportScheduleResult = async (schedule: InventorySchedule) => {
+    if (!schedule.results) return;
+    
+    try {
+      const doc = new jsPDF();
+      let logoData: string | null = null;
+      try {
+        logoData = await getBase64ImageFromURL("/oba.svg");
+      } catch (error) {
+        console.warn("Logo não carregado:", error);
+      }
+
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+
+      const addHeaderAndWatermark = (data: any) => {
+        // Watermark
+        if (logoData) {
+          doc.saveGraphicsState();
+          doc.setGState(new (doc as any).GState({ opacity: 0.1 }));
+          const wmWidth = 80;
+          const wmHeight = 40;
+          const wmX = (pageWidth - wmWidth) / 2;
+          const wmY = (pageHeight - wmHeight) / 2;
+          doc.addImage(logoData, 'PNG', wmX, wmY, wmWidth, wmHeight);
+          doc.restoreGraphicsState();
+
+          // Header
+          doc.addImage(logoData, 'PNG', 14, 10, 25, 15);
+        }
+
+        doc.setFontSize(16);
+        doc.setTextColor(40);
+        doc.text("Relatório de Inventário Concluído", pageWidth - 14, 18, { align: 'right' });
+        
+        doc.setFontSize(10);
+        doc.setTextColor(80);
+        const dateObj = (schedule.date as any)?.toDate ? (schedule.date as any).toDate() : new Date(schedule.date);
+        doc.text(`Data do Inventário: ${dateObj.toLocaleDateString('pt-BR')}`, pageWidth - 14, 24, { align: 'right' });
+        doc.text(`Aprovado Por: ${schedule.approvedBy || "-"}`, pageWidth - 14, 29, { align: 'right' });
+        const approvedAtObj = (schedule.approvedAt as any)?.toDate ? (schedule.approvedAt as any).toDate() : (schedule.approvedAt ? new Date(schedule.approvedAt) : null);
+        doc.text(`Data Aprovação: ${approvedAtObj ? approvedAtObj.toLocaleString('pt-BR') : "-"}`, pageWidth - 14, 34, { align: 'right' });
+
+        doc.setDrawColor(200);
+        doc.line(14, 38, pageWidth - 14, 38);
+      };
+
+      const tableData = schedule.results.map(result => {
+        const asset = assets.find(a => a.id === result.assetId);
+        return [
+          asset?.name || "Ativo Removido",
+          asset?.tagNumber || "-",
+          result.verified ? "Sim" : "Não",
+          result.newCostCenter || "Mantido"
+        ];
+      });
+
+      autoTable(doc, {
+        head: [["Ativo", "Plaqueta", "Verificado", "Novo Centro de Custo"]],
+        body: tableData,
+        startY: 45,
+        didDrawPage: addHeaderAndWatermark,
+        styles: { fontSize: 9, cellPadding: 3 },
+        headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold' }, // Blue-600
+        alternateRowStyles: { fillColor: [239, 246, 255] },
+        margin: { top: 45 }
+      });
+
+      // Signatures
+      const finalY = (doc as any).lastAutoTable.finalY + 40;
+      
+      doc.setDrawColor(0);
+      // Linhas de assinatura (3 colunas)
+      doc.line(15, finalY, 65, finalY);   // Solicitante
+      doc.line(80, finalY, 130, finalY);  // Responsável
+      doc.line(145, finalY, 195, finalY); // Aprovador
+
+      // Assinatura do Solicitante
+      // O solicitante no PDF será sempre o usuário logado que está gerando o relatório
+      const requester = users.find(u => String(u.id) === String(currentUserId)) || user;
+
+      if (requester?.signature && requester.signature.startsWith('data:image')) {
+        try {
+          doc.addImage(requester.signature, 'PNG', 20, finalY - 25, 40, 20);
+        } catch (e) { console.warn("Erro ao adicionar assinatura do solicitante", e); }
+      }
+
+      // Assinatura do Responsável (pega o primeiro se houver múltiplos)
+      const responsibleId = schedule.userIds[0];
+      const responsible = users.find(u => String(u.id) === String(responsibleId));
+      if (responsible?.signature && responsible.signature.startsWith('data:image')) {
+        try {
+          doc.addImage(responsible.signature, 'PNG', 85, finalY - 25, 40, 20);
+        } catch (e) { console.warn("Erro ao adicionar assinatura do responsável", e); }
+      }
+      
+      // Assinatura do Aprovador
+      const approver = users.find(u => u.name === schedule.approvedBy);
+      if (approver?.signature && approver.signature.startsWith('data:image')) {
+        try {
+          doc.addImage(approver.signature, 'PNG', 150, finalY - 25, 40, 20);
+        } catch (e) { console.warn("Erro ao adicionar assinatura do aprovador", e); }
+      }
+      
+      doc.setFontSize(9);
+      doc.setTextColor(0);
+      doc.text("Solicitante", 40, finalY + 5, { align: 'center' });
+      doc.text("Responsável", 105, finalY + 5, { align: 'center' });
+      doc.text("Aprovador", 170, finalY + 5, { align: 'center' });
+      doc.text(requester?.name || "N/A", 40, finalY + 10, { align: 'center' });
+      doc.text(responsible?.name || "N/A", 105, finalY + 10, { align: 'center' });
+      doc.text(schedule.approvedBy || "N/A", 170, finalY + 10, { align: 'center' });
+
+      doc.setFontSize(7);
+      doc.setTextColor(100);
+      
+      const formatDate = (d: any) => {
+        if (!d) return "-";
+        const dateObj = d?.toDate ? d.toDate() : new Date(d);
+        return dateObj.toLocaleString('pt-BR');
+      };
+
+      doc.text(formatDate(schedule.createdAt || schedule.date), 40, finalY + 15, { align: 'center' });
+      doc.text(formatDate(schedule.approvedAt), 105, finalY + 15, { align: 'center' }); // Responsável usa data de aprovação como conclusão
+      doc.text(formatDate(schedule.approvedAt), 170, finalY + 15, { align: 'center' });
+
+      doc.save(`inventario_concluido_${dateObj.toISOString().split('T')[0]}.pdf`);
       toast.success("Relatório PDF gerado com sucesso!");
     } catch (error) {
       console.error("Erro ao gerar PDF:", error);
@@ -1530,12 +1596,19 @@ export default function AssetInventoryPage() {
 
       <NewAssetFromInventoryDialog
         open={isNewAssetDialogOpen}
-        onOpenChange={setIsNewAssetDialogOpen}
+        onOpenChange={(open) => {
+          setIsNewAssetDialogOpen(open);
+          if (!open) {
+            setScannedInvoiceKey(""); // Limpa a chave escaneada ao fechar
+          }
+        }}
         initialCode={newAssetInitialCode}
         costCenters={costCenters}
         assetClasses={assetClasses}
         defaultCostCenter={performingSchedule?.costCenterCodes?.[0]}
         onSuccess={handleNewAssetCreated}
+        onStartScan={() => setIsInvoiceScanning(true)}
+        scannedInvoiceKey={scannedInvoiceKey}
       />
 
       {/* Diálogo para Realizar Inventário */}
@@ -1696,37 +1769,22 @@ export default function AssetInventoryPage() {
       </Dialog>
 
       {/* Scanner Overlay */}
-      {isScanning && (
+      {(isScanning || isInvoiceScanning) && (
         <div className="fixed inset-0 z-[100] bg-black flex flex-col">
             <div className="relative flex-1 bg-black flex items-center justify-center">
                 <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
                 <div className="absolute inset-0 border-2 border-white/50 m-12 rounded-lg pointer-events-none"></div>
                 <div className="absolute top-4 right-4 z-[101]">
-                    <Button variant="ghost" size="icon" className="text-white bg-black/50 hover:bg-black/70 rounded-full" onClick={() => setIsScanning(false)}>
-                        <X className="h-8 w-8" />
-                    </Button>
-                </div>
-                {/* Botão de Simulação para Testes (caso a leitura nativa falhe) */}
-                <div className="absolute bottom-20 left-0 right-0 flex justify-center">
-                    <Button variant="secondary" size="sm" className="opacity-80 hover:opacity-100" onClick={() => {
-                        const pending = performingSchedule?.assetIds.find(id => !executionData[id]?.verified);
-                        if (pending) {
-                            const asset = assets.find(a => a.id === pending);
-                            if (asset) {
-                                setScanInput(asset.tagNumber || asset.assetNumber || "");
-                                setIsScanning(false);
-                                toast.success("Leitura simulada (Teste)");
-                            }
-                        } else {
-                            toast.info("Nenhum ativo pendente para simular.");
-                        }
+                    <Button variant="ghost" size="icon" className="text-white bg-black/50 hover:bg-black/70 rounded-full" onClick={() => {
+                      setIsScanning(false);
+                      setIsInvoiceScanning(false);
                     }}>
-                        Simular Leitura (Teste)
+                        <X className="h-8 w-8" />
                     </Button>
                 </div>
             </div>
             <div className="p-6 bg-black text-white text-center font-medium">
-                Aponte a câmera para o código
+                Aponte a câmera para o {isScanning ? 'código do ativo' : 'código de barras da NF-e'}
             </div>
         </div>
       )}
