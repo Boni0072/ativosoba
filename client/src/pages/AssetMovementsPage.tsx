@@ -370,8 +370,8 @@ export default function AssetMovementsPage() {
         "Status": statusLabels[m.status] || m.status,
         "Justificativa": m.reason || "",
         "Solicitante": m.performedBy || "-",
-        "Aprovador": m.status === 'pending_approval' 
-          ? `Aguardando: ${getCostCenterResponsible(m.destinationCostCenter) || "Responsável"}`
+        "Aprovador": m.status === 'pending_approval'
+          ? getCostCenterResponsible(m.destinationCostCenter) || "Aguardando Aprovação"
           : (m.approvedBy || (m.rejectedBy ? `Rejeitado por ${m.rejectedBy}` : "-")),
         "Local Solicitante": m.requesterLocation ? `${m.requesterLocation.lat}, ${m.requesterLocation.lng}` : "-",
         "Local Aprovador/Rejeitador": m.approverLocation ? `${m.approverLocation.lat}, ${m.approverLocation.lng}` : (m.rejecterLocation ? `${m.rejecterLocation.lat}, ${m.rejecterLocation.lng}` : "-")
@@ -816,9 +816,14 @@ export default function AssetMovementsPage() {
                   let isApprover = false;
                   if (isPendingApproval && user) {
                     if (movement.type === 'transfer_cost_center') {
+                        const userRole = (user as any)?.role;
+                        if (userRole === 'admin' || userRole === 'diretoria') {
+                            isApprover = true;
+                        } else {
                         const destCC = costCenters.find(cc => cc.code === movement.destinationCostCenter);
                         if (destCC && (destCC.responsible === user.name || destCC.responsibleEmail === user.email)) {
                             isApprover = true;
+                        }
                         }
                     }
                     // TODO: Adicionar lógica para aprovação de transferência entre obras se necessário
@@ -884,12 +889,9 @@ export default function AssetMovementsPage() {
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">
                         {movement.status === 'pending_approval' ? (
-                          <div className="flex flex-col">
-                            <span className="text-[10px] text-orange-600 font-medium italic leading-none">Aguardando:</span>
-                            <span className="font-medium text-slate-700 mt-0.5">
-                              {movement.type === 'transfer_cost_center' ? getCostCenterResponsible(movement.destinationCostCenter) : "Aprovação"}
-                            </span>
-                          </div>
+                          <span className="font-medium text-slate-700">
+                            {movement.type === 'transfer_cost_center' ? getCostCenterResponsible(movement.destinationCostCenter) : "Aprovação"}
+                          </span>
                         ) : (
                           movement.approvedBy || (movement.rejectedBy ? `Rejeitado por ${movement.rejectedBy}` : "-")
                         )}

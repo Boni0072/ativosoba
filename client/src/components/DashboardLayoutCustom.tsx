@@ -20,6 +20,12 @@ const formatCurrency = (value: number) =>
     currency: "BRL",
   }).format(value);
 
+const sendEmailNotification = (to: string, subject: string, body: string) => {
+  const mailtoLink = `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  window.open(mailtoLink, '_self');
+  toast.info(`Abrindo cliente de e-mail para notificar ${to}`);
+};
+
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const { user: authUser, logout, isAuthenticated } = useAuth();
   const [user, setUser] = useState<any>(authUser);
@@ -44,6 +50,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [pendingInventoryCount, setPendingInventoryCount] = useState(0);
   const [myPendingSchedules, setMyPendingSchedules] = useState<any[]>([]);
   const [pendingInventoryApprovalCount, setPendingInventoryApprovalCount] = useState(0);
+  const [pendingInventoryApprovals, setPendingInventoryApprovals] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
   const [costCenters, setCostCenters] = useState<any[]>([]);
   const [viewProject, setViewProject] = useState<any | null>(null);
@@ -77,14 +84,19 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
   const userRole = (user as any)?.role;
 
+  const approvalSteps = [
+    { id: 'aguardando_classificacao', label: 'Classificação', requiredRole: 'classificacao' },
+    { id: 'aguardando_engenharia', label: 'Engenharia', requiredRole: 'engenharia' },
+    { id: 'aguardando_diretoria', label: 'Diretoria', requiredRole: 'diretoria' },
+    { id: 'aprovado', label: 'Aprovado', requiredRole: null }
+  ];
+
   const pendingProjects = projects?.filter(p => {
     if (!userRole) return false;
-    // Admin vê todas as pendências
-    if (userRole === 'admin') return ['aguardando_classificacao', 'aguardando_engenharia', 'aguardando_diretoria'].includes(p.status);
-    if (userRole === 'classificacao' && p.status === 'aguardando_classificacao') return true;
-    if (userRole === 'engenharia' && p.status === 'aguardando_engenharia') return true;
-    if (userRole === 'diretoria' && p.status === 'aguardando_diretoria') return true;
-    return false;
+    const pendingStatuses = ['aguardando_classificacao', 'aguardando_engenharia', 'aguardando_diretoria'];
+    if (!pendingStatuses.includes(p.status)) return false;
+    const currentStep = approvalSteps.find(s => s.id === p.status);
+    return currentStep && userRole === currentStep.requiredRole;
   }) || [];
 
   const prevPendingProjectsCountRef = useRef(0);
@@ -98,50 +110,49 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     prevPendingProjectsCountRef.current = currentCount;
   }, [pendingProjects.length]);
 
-  const prevInventoryCountRef = useRef(0);
-  const prevInventoryApprovalCountRef = useRef(0);
-  const prevPendingMovementsCountRef = useRef(0);
+  const prevPendingInventoryApprovalIds = useRef<string[]>([]);
+  const prevPendingMovementIds = useRef<string[]>([]);
 
   useEffect(() => {
     if (!userId) return;
 
     const unsubscribe = onSnapshot(collection(db, "inventory_schedules"), (snapshot) => {
       const schedules = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      // 1. Check if current user is in any pending schedule (Execution)
+      
       const mySchedules = schedules.filter((s: any) =>
         s.status === 'pending' && s.userIds && s.userIds.includes(userId)
       );
       setMyPendingSchedules(mySchedules);
-      
-      const currentCount = mySchedules.length;
+      setPendingInventoryCount(mySchedules.length);
 
-      if (currentCount > prevInventoryCountRef.current) {
-           const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3");
-           audio.play().catch(e => console.log("Audio play failed", e));
-           toast.info(`Você tem ${currentCount} agendamentos de inventário pendentes.`);
-      }
-      
-      prevInventoryCountRef.current = currentCount;
-      setPendingInventoryCount(currentCount);
-
-      // 2. Check if current user has any pending approvals (Requester)
       const myApprovals = schedules.filter((s: any) => 
-        s.status === 'waiting_approval' && (!s.requesterId || String(s.requesterId) === String(userId))
-      );
-      
-      const currentApprovalCount = myApprovals.length;
+        s.status === 'waiting_approval' && (s.requesterId && String(s.requesterId) === String(userId)));
+      setPendingInventoryApprovals(myApprovals);
 
-      if (currentApprovalCount > prevInventoryApprovalCountRef.current) {
+      const currentApprovalIds = myApprovals.map(a => a.id);
+      const newApprovals = myApprovals.filter(a => !prevPendingInventoryApprovalIds.current.includes(a.id));
+
+      if (newApprovals.length > 0 && user?.email) {
            const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3");
            audio.play().catch(e => console.log("Audio play failed", e));
-           toast.info(`Você tem ${currentApprovalCount} aprovações de inventário pendentes.`);
+
+           const subject = `Você tem ${newApprovals.length} nova(s) aprovação(ões) de inventário`;
+           const body = `Olá ${user.name},\n\nExistem novas solicitações de aprovação de inventário no sistema.\n\nDetalhes:\n${newApprovals.map(s => `- Inventário de ${s.date?.toDate().toLocaleDateString('pt-BR') || s.date} com ${s.assetIds.length} ativos.`).join('\n')}\n\nPor favor, acesse o sistema para revisar.\n\nLink: ${window.location.origin}/inventory`;
+
+           toast.info(subject, {
+             action: {
+               label: "Notificar por E-mail",
+               onClick: () => sendEmailNotification(user.email, subject, body)
+             }
+           });
       }
-      prevInventoryApprovalCountRef.current = currentApprovalCount;
-      setPendingInventoryApprovalCount(currentApprovalCount);
+
+      prevPendingInventoryApprovalIds.current = currentApprovalIds;
+      setPendingInventoryApprovalCount(myApprovals.length);
     });
 
     return () => unsubscribe();
-  }, [userId]);
+  }, [userId, user]);
 
   useEffect(() => {
     if (!userId || !costCenters.length || !user) return;
@@ -150,7 +161,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     const unsubscribe = onSnapshot(q, (snapshot) => {
         const movements = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         
-        const myPendingMovements = movements.filter(mov => {
+        const myPendingMovements = movements.filter((mov: any) => {
             if (mov.status !== 'pending_approval' || mov.type !== 'transfer_cost_center') return false;
             
             const destCC = costCenters.find(cc => cc.code === mov.destinationCostCenter);
@@ -160,13 +171,24 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             return false;
         });
 
-        const currentCount = myPendingMovements.length;
-        if (currentCount > prevPendingMovementsCountRef.current) {
+        const currentMovementIds = myPendingMovements.map(m => m.id);
+        const newMovements = myPendingMovements.filter(m => !prevPendingMovementIds.current.includes(m.id));
+
+        if (newMovements.length > 0 && user?.email) {
             const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3");
             audio.play().catch(e => console.log("Audio play failed", e));
-            toast.info(`Você tem ${currentCount} movimentações de ativos pendentes de aprovação.`);
+
+            const subject = `Você tem ${newMovements.length} nova(s) aprovação(ões) de movimentação de ativo`;
+            const body = `Olá ${user.name},\n\nExistem novas solicitações de aprovação de movimentação de ativos no sistema.\n\nDetalhes:\n${newMovements.map(m => `- Ativo: ${m.assetName} (${m.assetNumber}) para o CC ${m.destinationCostCenter}.`).join('\n')}\n\nPor favor, acesse o sistema para revisar.\n\nLink: ${window.location.origin}/asset-movements`;
+
+            toast.info(subject, {
+              action: {
+                label: "Notificar por E-mail",
+                onClick: () => sendEmailNotification(user.email, subject, body)
+              }
+            });
         }
-        prevPendingMovementsCountRef.current = currentCount;
+        prevPendingMovementIds.current = currentMovementIds;
         setPendingMovements(myPendingMovements);
     });
     return () => unsubscribe();
@@ -241,6 +263,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     { id: 'asset-movements', label: 'Movimentações', icon: ArrowRightLeft, path: '/asset-movements' },
     { id: 'asset-depreciation', label: 'Depreciação', icon: TrendingDown, path: '/asset-depreciation' },
     { id: 'inventory', label: 'Inventário de Ativos', icon: ClipboardList, path: '/inventory' },
+    { id: 'notifications', label: 'Notificações', icon: Bell, path: '/notifications', notificationCount: totalNotifications },
     { id: 'reports', label: 'Relatórios', icon: BarChart3, path: '/reports' },
     { id: 'accounting', label: 'Estrutura Contábil', icon: Landmark, path: '/accounting' },
     { id: 'users', label: 'Usuários', icon: Users, path: '/users' },
@@ -257,7 +280,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     if (!allowedPages || !Array.isArray(allowedPages)) return false;
 
     // Permite acesso apenas se a página estiver na lista de permissões.
-    return allowedPages.includes(item.id) || item.id === 'dashboard';
+    return allowedPages.includes(item.id) || item.id === 'dashboard' || item.id === 'notifications';
   });
 
   const steps = [
@@ -292,13 +315,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           {visibleNavItems.map((item) => {
             const Icon = item.icon;
             const isActive = location === item.path;
-            const isInventory = item.path === '/inventory';
-            const inventoryNotifCount = pendingInventoryCount + pendingInventoryApprovalCount;
-            const isMovements = item.id === 'asset-movements';
-            const movementNotifCount = pendingMovements.length;
-
-            const hasNotification = (isInventory && inventoryNotifCount > 0) || (isMovements && movementNotifCount > 0);
-            const notificationCount = isInventory ? inventoryNotifCount : movementNotifCount;
+            const hasNotification = item.notificationCount && item.notificationCount > 0;
 
             return (
               <button
@@ -310,11 +327,11 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                     : 'text-white/90 hover:bg-white/10'
                 }`}
               >
-                <Icon size={20} className={hasNotification ? "text-orange-400 animate-pulse" : ""} />
-                {sidebarOpen && <span className={hasNotification ? "text-orange-400 font-bold animate-pulse" : ""}>{item.label}</span>}
+                <Icon size={20} className={hasNotification ? "text-orange-400" : ""} />
+                {sidebarOpen && <span className={hasNotification ? "text-orange-400 font-bold" : ""}>{item.label}</span>}
                 {sidebarOpen && hasNotification && (
                   <span className="ml-auto bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full animate-pulse">
-                    {notificationCount}
+                    {item.notificationCount}
                   </span>
                 )}
               </button>
@@ -428,137 +445,14 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           <div className="flex items-center gap-4">
             
             {/* Notifications */}
-            <Dialog>
-              <DialogTrigger asChild>
-                <button className="relative p-2 text-slate-600 hover:bg-slate-100 rounded-full transition group">
-                  <Bell size={20} className={totalNotifications > 0 ? "text-orange-600 animate-pulse" : ""} />
-                  {totalNotifications > 0 && (
-                    <span className="absolute top-0 right-0 w-4 h-4 bg-red-500 text-white text-[10px] font-bold flex items-center justify-center rounded-full animate-pulse">
-                      {totalNotifications}
-                    </span>
-                  )}
-                </button>
-              </DialogTrigger>
-              <DialogContent className="max-w-md">
-                <DialogHeader>
-                  <DialogTitle>Notificações ({totalNotifications})</DialogTitle>
-                </DialogHeader>
-                <div className="space-y-4 mt-4">
-                  {/* Seção de Movimentação de Ativos */}
-                  {pendingMovements.length > 0 && (
-                    <div className="bg-cyan-50 border border-cyan-200 rounded-lg p-4">
-                      <div className="flex items-center gap-2 text-cyan-800 font-semibold mb-2">
-                        <ArrowRightLeft size={18} />
-                        <span>Aprovação de Movimentação</span>
-                      </div>
-                      <p className="text-sm text-cyan-700 mb-3">
-                        Você tem <strong>{pendingMovements.length}</strong> movimentação(ões) de ativo aguardando sua aprovação.
-                      </p>
-                      <div className="flex justify-end">
-                        <Button 
-                          size="sm" 
-                          className="bg-cyan-600 hover:bg-cyan-700 text-white w-full"
-                          onClick={() => setLocation('/asset-movements')}
-                        >
-                          Ir para Movimentações
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                  {/* Seção de Aprovação de Inventário */}
-                  {pendingInventoryApprovalCount > 0 && (
-                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                      <div className="flex items-center gap-2 text-blue-800 font-semibold mb-2">
-                        <CheckCircle2 size={18} />
-                        <span>Aprovação de Inventário</span>
-                      </div>
-                      <p className="text-sm text-blue-700 mb-3">
-                        Você tem <strong>{pendingInventoryApprovalCount}</strong> inventário(s) aguardando sua aprovação.
-                      </p>
-                      <div className="flex justify-end">
-                        <Button 
-                          size="sm" 
-                          className="bg-blue-600 hover:bg-blue-700 text-white w-full"
-                          onClick={() => setLocation('/inventory')}
-                        >
-                          Ir para Inventário
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Seção de Inventário */}
-                  {pendingInventoryCount > 0 && (
-                    <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
-                      <div className="flex items-center gap-2 text-orange-800 font-semibold mb-2">
-                        <ClipboardList size={18} />
-                        <span>Inventário Pendente</span>
-                      </div>
-                      <p className="text-sm text-orange-700 mb-3">
-                        Você foi designado para realizar a contagem de <strong>{pendingInventoryCount}</strong> agendamento(s).
-                      </p>
-                      <div className="flex justify-end">
-                        <Button 
-                          size="sm" 
-                          className="bg-orange-600 hover:bg-orange-700 text-white w-full"
-                          onClick={() => {
-                            if (myPendingSchedules.length === 1) {
-                              setLocation(`/inventory?schedule=${myPendingSchedules[0].id}`);
-                            } else {
-                              setLocation('/inventory');
-                            }
-                          }}
-                        >
-                          Ir para Inventário
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Seção de Projetos */}
-                  {pendingProjects.length > 0 ? (
-                    <>
-                      {pendingProjects.length > 0 && <h4 className="text-sm font-medium text-gray-500 mt-2">Aprovações de Projetos</h4>}
-                      {pendingProjects.map(project => (
-                        <div key={project.id} className="p-4 border rounded-lg bg-slate-50">
-                          <h3 className="font-semibold text-slate-800">{project.name}</h3>
-                          <p className="text-sm text-slate-600 mb-3">{project.description || "Sem descrição"}</p>
-                           <div className="grid grid-cols-3 gap-2 text-xs">
-                              <div>
-                                  <span className="text-xs text-slate-500 block font-medium uppercase">Capex</span>
-                                  <span className="font-mono font-medium text-slate-700">{formatCurrency(Number(project.plannedCapex || 0))}</span>
-                              </div>
-                              <div>
-                                  <span className="text-xs text-slate-500 block font-medium uppercase">Opex</span>
-                                  <span className="font-mono font-medium text-slate-700">{formatCurrency(Number(project.plannedOpex || 0))}</span>
-                              </div>
-                              <div>
-                                  <span className="text-xs text-slate-500 block font-medium uppercase">Valor Planejado</span>
-                                  <span className="font-mono font-bold text-blue-600">{formatCurrency(Number(project.plannedValue || 0))}</span>
-                              </div>
-                            <Button size="sm" variant="outline" className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200" onClick={() => handleReject(project)}>
-                              <XCircle size={16} className="mr-1" /> Rejeitar
-                            </Button>
-                            <Button size="sm" variant="outline" onClick={() => setViewProject(project)}>
-                              <Eye size={16} className="mr-1" /> Visualizar
-                            </Button>
-                            <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={() => handleApprove(project)}>
-                              <CheckCircle2 size={16} className="mr-1" /> Aprovar
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
-                    </>
-                  ) : (
-                    null
-                  )}
-
-                  {totalNotifications === 0 && (
-                    <p className="text-center text-slate-500 py-4">Nenhuma notificação pendente.</p>
-                  )}
-                </div>
-              </DialogContent>
-            </Dialog>
+            <button onClick={() => setLocation('/notifications')} className="relative p-2 text-slate-600 hover:bg-slate-100 rounded-full transition group">
+              <Bell size={20} className={totalNotifications > 0 ? "text-orange-600 animate-pulse" : ""} />
+              {totalNotifications > 0 && (
+                <span className="absolute top-0 right-0 w-4 h-4 bg-red-500 text-white text-[10px] font-bold flex items-center justify-center rounded-full animate-pulse">
+                  {totalNotifications}
+                </span>
+              )}
+            </button>
 
             <div className="text-right">
               <p className="text-sm font-semibold text-slate-700">{user?.name || user?.email}</p>
