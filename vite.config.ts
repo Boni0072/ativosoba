@@ -175,13 +175,16 @@ export default defineConfig({
       "localhost",
       "127.0.0.1",
     ],
+    proxy: {
+      "/api": {
+        target: "http://localhost:3000",
+        changeOrigin: true,
+        secure: false,
+      },
+    },
     fs: {
       strict: true,
       deny: ["**/.*"],
-    },
-    hmr: {
-      port: 3000, // Assuming Express server runs on port 3000
-      host: "localhost",
     },
   },
 });
