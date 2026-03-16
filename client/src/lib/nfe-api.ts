@@ -23,8 +23,11 @@ export interface NfeData {
 export const nfeApi = {
   consultar: async (chave: string): Promise<NfeData> => {
     try {
+      // Define a URL base usando a variável de ambiente ou o padrão relativo
+      const apiUrl = import.meta.env.VITE_API_URL || '/api/trpc';
+      const scraperUrl = apiUrl.replace('/trpc', '/nfe-scraper');
       // Chama a rota do backend que executa o Puppeteer
-      const response = await fetch('/api/nfe-scraper', {
+      const response = await fetch(scraperUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chave })
