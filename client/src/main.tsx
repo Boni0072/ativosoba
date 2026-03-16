@@ -61,7 +61,10 @@ const trpcClient = trpc.createClient({
 
         const contentType = response.headers.get("content-type");
         if ((contentType && contentType.includes("text/html")) || (!response.ok && !contentType?.includes("application/json"))) {
-          throw new Error(`Erro de comunicação com a API: Resposta HTML inesperada (Status ${response.status}). O backend pode estar offline ou a URL está incorreta.`);
+          if (response.status === 404) {
+            throw new Error(`Rota da API não encontrada (404). Verifique se o backend está rodando e se a URL '${input.toString()}' está correta.`);
+          }
+          throw new Error(`Erro de comunicação com a API: Resposta inesperada (Status ${response.status}). O backend pode estar offline ou a URL está incorreta.`);
         }
 
         return response;
