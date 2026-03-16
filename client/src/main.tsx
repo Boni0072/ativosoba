@@ -60,7 +60,7 @@ const trpcClient = trpc.createClient({
         });
 
         const contentType = response.headers.get("content-type");
-        if (contentType && contentType.includes("text/html")) {
+        if ((contentType && contentType.includes("text/html")) || (!response.ok && !contentType?.includes("application/json"))) {
           throw new Error(`Erro de comunicação com a API: Resposta HTML inesperada (Status ${response.status}). O backend pode estar offline ou a URL está incorreta.`);
         }
 
