@@ -4,7 +4,7 @@
 
 Sistema para gestão financeira e física de obras, com foco em controle de Capex/Opex e ativos imobilizados.
 
-## Funcionalidades Principais
+## Funcionalidades Principais     
   
 - **Dashboard**: Visão consolidada de orçamento vs realizado.
 - **Obras**: Cadastro e fluxo de aprovação de projetos.
