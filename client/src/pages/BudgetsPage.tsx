@@ -1,8 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { db } from "@/lib/firebase";
-import { collection, onSnapshot, doc, updateDoc, addDoc, query, where } from "firebase/firestore";
+import { collection, onSnapshot, doc, updateDoc, addDoc, query, where, getDocs, deleteDoc } from "firebase/firestore";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { trpc } from "@/lib/trpc";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -317,12 +316,9 @@ function CreateAssetDialog({
   initialData: { description: string; amount: string; date?: string };
   onSuccess: (assetId: string | number) => void;
 }) {
-  const utils = trpc.useUtils();
-  const createMutation = trpc.assets.create.useMutation();
-  const { data: assetClasses } = trpc.accounting.listAssetClasses.useQuery();
-  const { data: nextAssetNumber } = trpc.assets.getNextNumber.useQuery(undefined, {
-    enabled: open
-  });
+  const [assetClasses, setAssetClasses] = useState<any[]>([]);
+  const [nextAssetNumber, setNextAssetNumber] = useState("");
+  const [isCreating, setIsCreating] = useState(false);
 
   const [formData, setFormData] = useState({
     assetNumber: "",
@@ -341,6 +337,28 @@ function CreateAssetDialog({
   });
 
   useEffect(() => {
+    // Fetch asset classes
+    const unsubClasses = onSnapshot(collection(db, "asset_classes"), (snapshot) => {
+      setAssetClasses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+
+    // Calculate next asset number
+    if (open) {
+      getDocs(collection(db, "assets")).then(snapshot => {
+        const numbers = snapshot.docs
+          .map(d => d.data().assetNumber)
+          .filter(n => typeof n === 'string' && n.startsWith("ATV-"))
+          .map(n => parseInt(n.replace("ATV-", ""), 10))
+          .filter(n => !isNaN(n));
+        const max = numbers.length > 0 ? Math.max(...numbers) : 0;
+        setNextAssetNumber(`ATV-${String(max + 1).padStart(6, '0')}`);
+      });
+    }
+
+    return () => unsubClasses();
+  }, [open]);
+
+  useEffect(() => {
     if (open) {
       setFormData(prev => ({
         ...prev,
@@ -348,10 +366,10 @@ function CreateAssetDialog({
         description: initialData.description || "",
         value: initialData.amount ? String(initialData.amount) : "",
         startDate: initialData.date ? new Date(initialData.date).toISOString().split("T")[0] : new Date().toISOString().split("T")[0],
-        assetNumber: nextAssetNumber || prev.assetNumber
+        assetNumber: nextAssetNumber || ""
       }));
     }
-  }, [open, initialData, nextAssetNumber]);
+  }, [open, initialData, nextAssetNumber]); // Dependência adicionada
 
   useEffect(() => {
     if (open && nextAssetNumber && !formData.assetNumber) {
@@ -380,7 +398,8 @@ function CreateAssetDialog({
       return;
     }
     try {
-      const result = await createMutation.mutateAsync({
+      setIsCreating(true);
+      const docRef = await addDoc(collection(db, "assets"), {
         projectId,
         assetNumber: formData.assetNumber,
         tagNumber: formData.tagNumber || undefined,
@@ -395,15 +414,17 @@ function CreateAssetDialog({
         depreciationAccountCode: formData.depreciationAccountCode,
         amortizationAccountCode: formData.amortizationAccountCode,
         resultAccountCode: formData.resultAccountCode,
-      } as any);
+        createdAt: new Date().toISOString(),
+        status: "planejamento"
+      });
       
       toast.success("Ativo criado com sucesso!");
-      utils.assets.list.invalidate({ projectId: String(projectId) });
-      utils.assets.getNextNumber.invalidate();
-      onSuccess(result.id);
+      onSuccess(docRef.id);
       onOpenChange(false);
     } catch (error) {
       toast.error("Erro ao criar ativo");
+    } finally {
+      setIsCreating(false);
     }
   };
 
@@ -450,8 +471,8 @@ function CreateAssetDialog({
               <Input type="date" value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} required />
             </div>
           </div>
-          <Button type="submit" className="w-full" disabled={createMutation.isPending}>
-            {createMutation.isPending ? "Criando..." : "Criar Ativo"}
+          <Button type="submit" className="w-full" disabled={isCreating}>
+            {isCreating ? "Criando..." : "Criar Ativo"}
           </Button>
         </form>
       </DialogContent>
@@ -697,31 +718,19 @@ function ExpenseRow({ expense, accountingAccounts, assets, onSave, onOpenCreateA
 // This component fetches data for a single project row.
 // NOTE: This approach causes a "N+1" query problem, where each row triggers its own data fetching.
 // For production, it's recommended to create a dedicated tRPC endpoint that aggregates this data on the server.
-function ProjectBudgetRow({ project, onDataLoaded }: { project: ProjectType, onDataLoaded?: (id: string, planned: number, realized: number) => void }) {
+function ProjectBudgetRow({ project, onDataLoaded, projectBudgets, projectExpenses, accountingAccounts, assets }: { 
+  project: ProjectType, 
+  onDataLoaded?: (id: string, planned: number, realized: number) => void,
+  projectBudgets: any[],
+  projectExpenses: any[],
+  accountingAccounts: any[],
+  assets: any[]
+}) {
   const [isOpen, setIsOpen] = useState(false);
   const { user } = useAuth();
   
-  const [assets, setAssets] = useState<any[]>([]);
-  useEffect(() => {
-    const q = query(collection(db, "assets"), where("projectId", "==", String(project.id)));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setAssets(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    });
-    return () => unsubscribe();
-  }, [project.id]);
-
-  const { data: budgets } = trpc.budgets.listByProject.useQuery({ projectId: project.id });
-  
-  const [expenses, setExpenses] = useState<any[]>([]);
-  useEffect(() => {
-    const q = query(collection(db, "expenses"), where("projectId", "==", String(project.id)));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setExpenses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    });
-    return () => unsubscribe();
-  }, [project.id]);
-
-  const { data: accountingAccounts } = trpc.accounting.listAccounts.useQuery();
+  const budgets = projectBudgets;
+  const expenses = projectExpenses;
 
   const monthlyEvolution = useMemo(() => {
     if (!expenses) return [];
@@ -768,8 +777,6 @@ function ProjectBudgetRow({ project, onDataLoaded }: { project: ProjectType, onD
 
   const assetNumbers = assets?.map(asset => (asset as any).assetNumber).filter(Boolean).join(', ');
   const itemPrincipal = assetNumbers || (budgets?.[0] as any)?.description || "N/A";
-
-  const utils = trpc.useUtils();
 
   const [createAssetOpen, setCreateAssetOpen] = useState(false);
   const [assetCreationCallback, setAssetCreationCallback] = useState<((id: string | number) => void) | null>(null);
@@ -1064,11 +1071,15 @@ function ProjectBudgetRow({ project, onDataLoaded }: { project: ProjectType, onD
 
 
 export default function BudgetsPage() {
-  const utils = trpc.useUtils();
   const { user } = useAuth();
   const [projects, setProjects] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [viewProject, setViewProject] = useState<any | null>(null);
+
+  const [allBudgets, setAllBudgets] = useState<any[]>([]);
+  const [allExpenses, setAllExpenses] = useState<any[]>([]);
+  const [allAssets, setAllAssets] = useState<any[]>([]);
+  const [accountingAccounts, setAccountingAccounts] = useState<any[]>([]);
 
   const [isScanning, setIsScanning] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1132,12 +1143,35 @@ export default function BudgetsPage() {
   ];
 
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, "projects"), (snapshot) => {
+    const unsubProjects = onSnapshot(collection(db, "projects"), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setProjects(data);
       setIsLoading(false);
     });
-    return () => unsubscribe();
+
+    const unsubBudgets = onSnapshot(collection(db, "budgets"), (snapshot) => {
+      setAllBudgets(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+
+    const unsubExpenses = onSnapshot(collection(db, "expenses"), (snapshot) => {
+      setAllExpenses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+
+    const unsubAssets = onSnapshot(collection(db, "assets"), (snapshot) => {
+      setAllAssets(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+
+    const unsubAccounts = onSnapshot(collection(db, "accounting_accounts"), (snapshot) => {
+      setAccountingAccounts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+
+    return () => {
+      unsubProjects();
+      unsubBudgets();
+      unsubExpenses();
+      unsubAssets();
+      unsubAccounts();
+    };
   }, []);
 
   const [selectedProjectId, setSelectedProjectId] = useState<string>("all");
@@ -1178,12 +1212,21 @@ export default function BudgetsPage() {
   });
   const [nfeProducts, setNfeProducts] = useState<any[]>([]);
 
-  // const fetchNfeMutation = trpc.expenses.fetchNfeData.useMutation(); // Removido para simulação
+  const [assetsForDialog, setAssetsForDialog] = useState<any[] | null>(null);
 
-  const { data: assetsForDialog } = trpc.assets.list.useQuery(
-    { projectId: expenseFormData.projectId || undefined },
-    { enabled: !!expenseFormData.projectId }
-  );
+  useEffect(() => {
+    if (expenseFormData.projectId) {
+      setAssetsForDialog(null);
+      const q = query(collection(db, "assets"), where("projectId", "==", String(expenseFormData.projectId)));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setAssetsForDialog(data);
+      });
+      return () => unsubscribe();
+    } else {
+      setAssetsForDialog(null);
+    }
+  }, [expenseFormData.projectId]);
 
   const handleOpenExpenseDialog = (open: boolean) => {
     setOpenExpenseDialog(open);
@@ -1209,91 +1252,11 @@ export default function BudgetsPage() {
     }
   };
 
-  const nfeMutation = trpc.nfe.consultar.useMutation({
-    onSuccess: (data) => {
-      toast.success("Dados da NF-e importados com sucesso!", {
-        id: "fetch-nfe",
-        description: "Dados extraídos do portal da NF-e.",
-      });
-
-      let formDescription = data.description;
-      let formAmount = data.amount ? String(data.amount) : expenseFormData.amount;
-      let formQuantity = "1";
-      let formNotes = `NF-e: ${nfeKey}. ${data.notes || ''}`.trim();
-      let formNcm = "";
-      let formCfop = "";
-      let formUnit = "";
-
-      setNfeProducts(data.products || []);
-
-      if (data.products && data.products.length > 0) {
-          if (data.products.length === 1) {
-              const p = data.products[0];
-              formDescription = p.description;
-              formAmount = String(p.totalPrice);
-              formQuantity = String(p.quantity);
-              formNcm = p.ncm || "";
-              formCfop = p.cfop || "";
-              formUnit = p.unit || "";
-              formNotes += `\n\nDetalhes do Item:\nCód: ${p.code}\nNCM: ${p.ncm}\nUnidade: ${p.unit}`;
-          } else {
-              formDescription = `NF-e ${nfeKey} - ${data.products.length} itens`;
-              formNotes += "\n\nItens da Nota:\n" + data.products.map((p: any) => `- ${p.description} (${p.quantity} ${p.unit}) R$ ${p.totalPrice.toFixed(2)} | NCM: ${p.ncm}`).join("\n");
-          }
-      }
-
-      let attachmentFile = null;
-      if (data.pdfBase64) {
-          try {
-              const byteCharacters = atob(data.pdfBase64);
-              const byteNumbers = new Array(byteCharacters.length);
-              for (let i = 0; i < byteCharacters.length; i++) {
-                  byteNumbers[i] = byteCharacters.charCodeAt(i);
-              }
-              const byteArray = new Uint8Array(byteNumbers);
-              const blob = new Blob([byteArray], { type: "application/pdf" });
-              attachmentFile = new File([blob], `NFe-${nfeKey}.pdf`, { type: "application/pdf" });
-              toast.success("PDF da Nota Fiscal baixado e anexado automaticamente!");
-          } catch (e) {
-              console.error("Erro ao converter PDF", e);
-          }
-      }
-
-      // Tenta extrair o número da nota da chave de acesso (posições 26-34)
-      let extractedInvoiceNumber = "";
-      if (nfeKey && nfeKey.length === 44) {
-        extractedInvoiceNumber = parseInt(nfeKey.substring(25, 34)).toString();
-      }
-
-      setExpenseFormData(prev => ({
-        ...prev,
-        description: formDescription || prev.description,
-        amount: formAmount,
-        quantity: formQuantity,
-        date: data.date && !isNaN(new Date(data.date).getTime()) ? new Date(data.date).toISOString().split("T")[0] : prev.date,
-        notes: formNotes,
-        attachment: attachmentFile || prev.attachment,
-        invoiceNumber: extractedInvoiceNumber || prev.invoiceNumber,
-        ncm: formNcm || prev.ncm,
-        cfop: formCfop || prev.cfop,
-        unit: formUnit || prev.unit
-      }));
-    },
-    onError: (error) => {
-      const errorMessage = error instanceof Error ? error.message : "Erro desconhecido.";
-      toast.error("Falha ao buscar dados da NF-e.", { id: "fetch-nfe", description: errorMessage });
-    },
-    onMutate: () => {
-      toast.info("Buscando dados da NF-e... O navegador pode abrir para resolver o Captcha.", { id: "fetch-nfe", duration: 10000 });
-    }
-  });
+  // Simulação de consulta NF-e
+  const isNfeLoading = false;
 
   const handleFetchNfe = async () => {
-    if (!nfeKey || nfeKey.length !== 44) {
-      toast.error("Por favor, insira uma chave de acesso válida com 44 dígitos.");
-      return;
-    }
-    nfeMutation.mutate({ chave: nfeKey });
+    toast.info("Consulta automática via backend desativada. Use o upload de XML.");
   };
 
   const handleAttachmentChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1502,8 +1465,9 @@ export default function BudgetsPage() {
 
         let assetsMap: Record<string, string> = {};
         try {
-            const allAssets = await utils.assets.list.fetch({});
-            allAssets.forEach((a: any) => {
+            const assetsSnapshot = await getDocs(collection(db, "assets"));
+            assetsSnapshot.forEach((doc) => {
+                const a = doc.data();
                 if (a.assetNumber) assetsMap[String(a.assetNumber)] = String(a.id);
             });
         } catch (err) {
@@ -1549,7 +1513,7 @@ export default function BudgetsPage() {
                     assetId = assetsMap[String(assetNumber)];
                 }
 
-                await createExpenseMutation.mutateAsync({
+                await addDoc(collection(db, "expenses"), {
                     projectId: String(projectId),
                     description: String(description),
                     amount: String(amount),
@@ -1559,7 +1523,9 @@ export default function BudgetsPage() {
                     date: date,
                     notes: String(notes),
                     assetId: assetId ? String(assetId) : undefined,
-                } as any);
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString()
+                });
                 successCount++;
             } catch (err) {
                 console.error(err);
@@ -1644,16 +1610,16 @@ export default function BudgetsPage() {
                       type="button"
                       variant="secondary"
                       onClick={handleFetchNfe}
-                      disabled={nfeMutation.isPending}
+                        disabled={isNfeLoading}
                     >
-                      {nfeMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Buscar"}
+                        {isNfeLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Buscar"}
                     </Button>
                   </div>
                 </div>
 
                 <div>
                   <label className="text-sm font-medium">Obra</label>
-                  <Select value={expenseFormData.projectId} onValueChange={(v) => setExpenseFormData({ ...expenseFormData, projectId: v })}>
+                  <Select value={expenseFormData.projectId} onValueChange={(v) => setExpenseFormData(prev => ({ ...prev, projectId: v, assetId: null }))}>
                     <SelectTrigger>
                       <SelectValue placeholder="Selecione uma obra" />
                     </SelectTrigger>
@@ -1751,11 +1717,13 @@ export default function BudgetsPage() {
                   <div>
                     <label className="text-sm font-medium">Vincular ao Ativo</label>
                     <Select 
+                      key={`${expenseFormData.projectId || "no-project"}-${assetsForDialog?.length || 0}`} // Força atualização ao carregar ativos
+                      disabled={!expenseFormData.projectId}
                       value={expenseFormData.assetId === null ? "none" : String(expenseFormData.assetId)} 
-                      onValueChange={(v) => setExpenseFormData({ ...expenseFormData, assetId: v === "none" ? null : v })}
+                      onValueChange={(v) => setExpenseFormData(prev => ({ ...prev, assetId: v === "none" ? null : v }))}
                     >
                       <SelectTrigger>
-                        <SelectValue placeholder="Selecione um ativo (Opcional)" />
+                        <SelectValue placeholder={(!assetsForDialog && expenseFormData.projectId) ? "Carregando..." : "Selecione um ativo (Opcional)"} />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="none">Nenhum</SelectItem>
@@ -2055,9 +2023,22 @@ export default function BudgetsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {filteredProjects.map((project) => (
-                  <ProjectBudgetRow key={project.id} project={project} onDataLoaded={handleDataLoaded} />
-                ))}
+                {filteredProjects.map((project) => {
+                  const projectBudgets = allBudgets.filter(b => String(b.projectId) === String(project.id));
+                  const projectExpenses = allExpenses.filter(e => String(e.projectId) === String(project.id));
+                  const projectAssets = allAssets.filter(a => String(a.projectId) === String(project.id));
+                  return (
+                    <ProjectBudgetRow 
+                      key={project.id} 
+                      project={project} 
+                      onDataLoaded={handleDataLoaded}
+                      projectBudgets={projectBudgets}
+                      projectExpenses={projectExpenses}
+                      accountingAccounts={accountingAccounts || []}
+                      assets={projectAssets}
+                    />
+                  )
+                })}
               </tbody>
             </table>
           </div>

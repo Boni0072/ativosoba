@@ -22,22 +22,8 @@ export interface NfeData {
 
 export const nfeApi = {
   consultar: async (chave: string): Promise<NfeData> => {
-    try {
-      // Define a URL base usando a variável de ambiente ou o padrão relativo
-      const apiUrl = import.meta.env.VITE_API_URL || '/api/trpc';
-      const scraperUrl = apiUrl.replace('/trpc', '/nfe-scraper');
-      // Chama a rota do backend que executa o Puppeteer
-      const response = await fetch(scraperUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chave })
-      });
-
-      if (!response.ok) throw new Error('Falha na comunicação com o serviço de consulta.');
-      return await response.json();
-    } catch (error) {
-      console.error("Erro na consulta NF-e:", error);
-      throw error;
-    }
+    // Backend removido. A consulta automática via chave requer servidor proxy.
+    // O sistema agora utiliza o processamento local de XML.
+    throw new Error("A consulta online está desativada na versão 'apenas frontend'. Por favor, faça o upload do arquivo XML da nota.");
   }
 };

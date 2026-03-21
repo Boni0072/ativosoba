@@ -1,5 +1,6 @@
-import React from "react";
-import { trpc } from "@/lib/trpc";
+import React, { useState, useEffect } from "react";
+import { db } from "@/lib/firebase";
+import { collection, query, where, onSnapshot } from "firebase/firestore";
 import { Card } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Loader2 } from "lucide-react";
@@ -12,28 +13,43 @@ const formatCurrency = (value: number) =>
   }).format(value);
 
 export default function AssetBudgetSummary({ asset }: { asset: any }) {
-  const { data: budgets, isLoading: isLoadingBudgets } = trpc.budgets.listByProject.useQuery(
-    { projectId: String(asset.projectId) },
-    { enabled: !!asset.projectId }
-  );
+  const [budgets, setBudgets] = useState<any[]>([]);
+  const [budgetItems, setBudgetItems] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    if (asset.projectId) {
+      const q = query(collection(db, "budgets"), where("projectId", "==", String(asset.projectId)));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        setBudgets(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        setIsLoading(false);
+      });
+      return () => unsubscribe();
+    } else {
+      setIsLoading(false);
+    }
+  }, [asset.projectId]);
 
   const assetBudget = budgets?.find(
     (b) =>
-      b.name.includes(asset.name) ||
-      (asset.assetNumber && b.name.includes(asset.assetNumber)) ||
+      (b.name && b.name.includes(asset.name)) ||
+      (asset.assetNumber && b.name && b.name.includes(asset.assetNumber)) ||
       (b.description && b.description.includes(asset.name)) ||
       (asset.assetNumber && b.description && b.description.includes(asset.assetNumber))
   );
 
-  const { data: budgetItems, isLoading: isLoadingBudgetItems } = trpc.budgetItems.listByBudget.useQuery(
-    { budgetId: assetBudget?.id || "" },
-    { enabled: !!assetBudget?.id }
-  );
+  useEffect(() => {
+    if (assetBudget?.id) {
+      const q = query(collection(db, "budget_items"), where("budgetId", "==", String(assetBudget.id)));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        setBudgetItems(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      });
+      return () => unsubscribe();
+    }
+  }, [assetBudget]);
 
   const totalBudgetItems =
     budgetItems?.reduce((acc: number, curr: any) => acc + parseFloat(curr.amount || "0"), 0) || 0;
-
-  const isLoading = isLoadingBudgets || isLoadingBudgetItems;
 
   if (isLoading) {
     return <div className="flex justify-center p-4"><Loader2 className="animate-spin" /></div>;

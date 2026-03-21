@@ -1,84 +1,72 @@
-import { getLoginUrl } from "@/const";
-import { trpc } from "@/lib/trpc";
-import { TRPCClientError } from "@trpc/client";
-import { useCallback, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
+import { auth } from "@/lib/firebase";
+import { onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup } from "firebase/auth";
 
-type UseAuthOptions = {
-  redirectOnUnauthenticated?: boolean;
-  redirectPath?: string;
-};
-
-export function useAuth(options?: UseAuthOptions) {
-  const { redirectOnUnauthenticated = false, redirectPath = getLoginUrl() } =
-    options ?? {};
-  const utils = trpc.useUtils();
-
-  const meQuery = trpc.auth.me.useQuery(undefined, {
-    retry: false,
-    refetchOnWindowFocus: false,
-  });
-
-  const logoutMutation = trpc.auth.logout.useMutation({
-    onSuccess: () => {
-      utils.auth.me.setData(undefined, null);
-    },
-  });
-
-  const logout = useCallback(async () => {
-    try {
-      await logoutMutation.mutateAsync();
-    } catch (error: unknown) {
-      if (
-        error instanceof TRPCClientError &&
-        error.data?.code === "UNAUTHORIZED"
-      ) {
-        return;
-      }
-      throw error;
-    } finally {
-      utils.auth.me.setData(undefined, null);
-      await utils.auth.me.invalidate();
-    }
-  }, [logoutMutation, utils]);
-
-  const state = useMemo(() => {
-    localStorage.setItem(
-      "manus-runtime-user-info",
-      JSON.stringify(meQuery.data)
-    );
-    return {
-      user: meQuery.data ?? null,
-      loading: meQuery.isLoading || logoutMutation.isPending,
-      error: meQuery.error ?? logoutMutation.error ?? null,
-      isAuthenticated: Boolean(meQuery.data),
-    };
-  }, [
-    meQuery.data,
-    meQuery.error,
-    meQuery.isLoading,
-    logoutMutation.error,
-    logoutMutation.isPending,
-  ]);
+export function useAuth() {
+  const [user, setUser] = useState<any | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    if (!redirectOnUnauthenticated) return;
-    if (meQuery.isLoading || logoutMutation.isPending) return;
-    if (state.user) return;
-    if (typeof window === "undefined") return;
-    if (window.location.pathname === redirectPath) return;
+    // Escuta alterações na autenticação do Firebase (Login/Logout)
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      console.log("Auth State Changed:", firebaseUser ? "Logged In" : "Logged Out");
+      if (firebaseUser) {
+        // Usuário logado via Firebase
+        setUser({
+          id: firebaseUser.uid,
+          name: firebaseUser.displayName || firebaseUser.email?.split("@")[0] || "Usuário",
+          email: firebaseUser.email,
+          role: "diretoria", // Permissão total padrão para versão sem backend
+          avatar: firebaseUser.photoURL
+        });
+      } else {
+        // Fallback: Verifica se há um usuário salvo no localStorage (Login manual)
+        const storedUser = localStorage.getItem("obras_user");
+        if (storedUser) {
+          try {
+            const parsedUser = JSON.parse(storedUser);
+            setUser(parsedUser);
+          } catch (error) {
+            console.error("Erro ao recuperar sessão:", error);
+            setUser(null);
+          }
+        } else {
+          setUser(null);
+        }
+      }
+      setIsLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
 
-    window.location.href = redirectPath
-  }, [
-    redirectOnUnauthenticated,
-    redirectPath,
-    logoutMutation.isPending,
-    meQuery.isLoading,
-    state.user,
-  ]);
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      localStorage.removeItem("obras_user");
+      localStorage.removeItem("obras_token");
+      setUser(null);
+      window.location.href = "/login"; // Redirecionamento forçado para garantir limpeza de estado
+    } catch (error) {
+      console.error("Erro ao sair:", error);
+    }
+  };
+
+  const loginWithGoogle = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error("Erro no login com Google:", error);
+      throw error;
+    }
+  };
 
   return {
-    ...state,
-    refresh: () => meQuery.refetch(),
+    user,
+    isLoading,
+    loading: isLoading, // Alias para compatibilidade com App.tsx
+    isAuthenticated: !!user, // Alias para compatibilidade com App.tsx
     logout,
+    loginWithGoogle
   };
 }

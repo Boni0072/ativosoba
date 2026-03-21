@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { trpc } from "@/lib/trpc";
+import { useState, useEffect } from "react";
+import { db } from "@/lib/firebase";
+import { collection, onSnapshot, addDoc, deleteDoc, doc, query, where } from "firebase/firestore";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -19,22 +20,51 @@ interface BudgetItemForm {
 }
 
 export default function BudgetsPageNew() {
-  const { data: projects } = trpc.projects.list.useQuery();
-  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
-  const { data: budgets, isLoading, refetch } = trpc.budgets.listByProject.useQuery(
-    { projectId: selectedProjectId || 0 },
-    { enabled: !!selectedProjectId }
-  );
-  const [selectedBudgetId, setSelectedBudgetId] = useState<number | null>(null);
-  const { data: budgetItems, refetch: refetchItems } = trpc.budgetItems.listByBudget.useQuery(
-    { budgetId: selectedBudgetId || 0 },
-    { enabled: !!selectedBudgetId }
-  );
+  const [projects, setProjects] = useState<any[]>([]);
+  const [budgets, setBudgets] = useState<any[]>([]);
+  const [budgetItems, setBudgetItems] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const createBudgetMutation = trpc.budgets.create.useMutation();
-  const createItemMutation = trpc.budgetItems.create.useMutation();
-  const deleteItemMutation = trpc.budgetItems.delete.useMutation();
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [selectedBudgetId, setSelectedBudgetId] = useState<string | null>(null);
 
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "projects"), (snap) => {
+        setProjects(snap.docs.map(d => ({id: d.id, ...d.data()})));
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    if(selectedProjectId) {
+        setIsLoading(true);
+        const q = query(collection(db, "budgets"), where("projectId", "==", String(selectedProjectId)));
+        const unsub = onSnapshot(q, (snap) => {
+            setBudgets(snap.docs.map(d => ({id: d.id, ...d.data()})));
+            setIsLoading(false);
+        });
+        return () => unsub();
+    } else {
+        setBudgets([]);
+    }
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    if(selectedBudgetId) {
+        const q = query(collection(db, "budget_items"), where("budgetId", "==", String(selectedBudgetId)));
+        const unsub = onSnapshot(q, (snap) => {
+            setBudgetItems(snap.docs.map(d => ({id: d.id, ...d.data()})));
+        });
+        return () => unsub();
+    } else {
+        setBudgetItems([]);
+    }
+  }, [selectedBudgetId]);
+
+  const [isCreatingBudget, setIsCreatingBudget] = useState(false);
+  const [isCreatingItem, setIsCreatingItem] = useState(false);
+  const [isDeletingItem, setIsDeletingItem] = useState(false);
+  
   const [openBudgetDialog, setOpenBudgetDialog] = useState(false);
   const [openItemDialog, setOpenItemDialog] = useState(false);
   const [budgetForm, setBudgetForm] = useState({ name: "", description: "", plannedAmount: "" });
@@ -54,18 +84,21 @@ export default function BudgetsPageNew() {
       return;
     }
     try {
-      await createBudgetMutation.mutateAsync({
+      setIsCreatingBudget(true);
+      await addDoc(collection(db, "budgets"), {
         projectId: selectedProjectId,
         name: budgetForm.name,
         description: budgetForm.description || undefined,
         plannedAmount: budgetForm.plannedAmount,
+        createdAt: new Date().toISOString()
       });
       toast.success("Budget criado com sucesso!");
       setBudgetForm({ name: "", description: "", plannedAmount: "" });
       setOpenBudgetDialog(false);
-      refetch();
     } catch (error) {
       toast.error("Erro ao criar budget");
+    } finally {
+      setIsCreatingBudget(false);
     }
   };
 
@@ -76,7 +109,8 @@ export default function BudgetsPageNew() {
       return;
     }
     try {
-      await createItemMutation.mutateAsync({
+      setIsCreatingItem(true);
+      await addDoc(collection(db, "budget_items"), {
         budgetId: selectedBudgetId,
         description: itemForm.description,
         amount: itemForm.amount,
@@ -84,6 +118,7 @@ export default function BudgetsPageNew() {
         accountingClass: itemForm.accountingClass || undefined,
         assetClass: itemForm.assetClass || undefined,
         notes: itemForm.notes || undefined,
+        createdAt: new Date().toISOString()
       });
       toast.success("Item adicionado com sucesso!");
       setItemForm({
@@ -95,19 +130,22 @@ export default function BudgetsPageNew() {
         notes: "",
       });
       setOpenItemDialog(false);
-      refetchItems();
     } catch (error) {
       toast.error("Erro ao adicionar item");
+    } finally {
+        setIsCreatingItem(false);
     }
   };
 
-  const handleDeleteItem = async (id: number) => {
+  const handleDeleteItem = async (id: string) => {
     try {
-      await deleteItemMutation.mutateAsync({ id });
+      setIsDeletingItem(true);
+      await deleteDoc(doc(db, "budget_items", id));
       toast.success("Item deletado com sucesso!");
-      refetchItems();
     } catch (error) {
       toast.error("Erro ao deletar item");
+    } finally {
+        setIsDeletingItem(false);
     }
   };
 
@@ -133,13 +171,13 @@ export default function BudgetsPageNew() {
             <form onSubmit={handleCreateBudget} className="space-y-4">
               <div>
                 <label className="text-sm font-medium">Obra</label>
-                <Select value={selectedProjectId?.toString() || ""} onValueChange={(v) => setSelectedProjectId(Number(v))}>
+                <Select value={selectedProjectId || ""} onValueChange={(v) => setSelectedProjectId(v)}>
                   <SelectTrigger>
                     <SelectValue placeholder="Selecione uma obra" />
                   </SelectTrigger>
                   <SelectContent>
                     {projects?.map((p) => (
-                      <SelectItem key={p.id} value={p.id.toString()}>
+                      <SelectItem key={p.id} value={String(p.id)}>
                         {p.name}
                       </SelectItem>
                     ))}
@@ -174,8 +212,8 @@ export default function BudgetsPageNew() {
                   placeholder="0,00"
                 />
               </div>
-              <Button type="submit" className="w-full" disabled={createBudgetMutation.isPending}>
-                {createBudgetMutation.isPending ? "Criando..." : "Criar Budget"}
+              <Button type="submit" className="w-full" disabled={isCreatingBudget}>
+                {isCreatingBudget ? "Criando..." : "Criar Budget"}
               </Button>
             </form>
           </DialogContent>
@@ -185,13 +223,13 @@ export default function BudgetsPageNew() {
       {/* Project Selection */}
       <Card className="p-6">
         <label className="text-sm font-medium">Selecione uma Obra</label>
-        <Select value={selectedProjectId?.toString() || ""} onValueChange={(v) => setSelectedProjectId(Number(v))}>
+        <Select value={selectedProjectId || ""} onValueChange={(v) => setSelectedProjectId(v)}>
           <SelectTrigger>
             <SelectValue placeholder="Selecione uma obra" />
           </SelectTrigger>
           <SelectContent>
             {projects?.map((p) => (
-              <SelectItem key={p.id} value={p.id.toString()}>
+              <SelectItem key={p.id} value={String(p.id)}>
                 {p.name}
               </SelectItem>
             ))}
@@ -307,8 +345,8 @@ export default function BudgetsPageNew() {
                                 />
                               </div>
 
-                              <Button type="submit" className="w-full" disabled={createItemMutation.isPending}>
-                                {createItemMutation.isPending ? "Adicionando..." : "Adicionar Item"}
+                              <Button type="submit" className="w-full" disabled={isCreatingItem}>
+                                {isCreatingItem ? "Adicionando..." : "Adicionar Item"}
                               </Button>
                             </form>
                           </DialogContent>
@@ -346,7 +384,7 @@ export default function BudgetsPageNew() {
                                   <button
                                     onClick={() => handleDeleteItem(item.id)}
                                     className="text-red-600 hover:text-red-700 transition"
-                                    disabled={deleteItemMutation.isPending}
+                                    disabled={isDeletingItem}
                                   >
                                     <Trash2 size={16} />
                                   </button>
@@ -368,7 +406,7 @@ export default function BudgetsPageNew() {
                   <Button
                     variant="outline"
                     className="w-full"
-                    onClick={() => setSelectedBudgetId(budget.id)}
+                    onClick={() => setSelectedBudgetId(String(budget.id))}
                   >
                     Ver Itens
                   </Button>

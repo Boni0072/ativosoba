@@ -1,5 +1,4 @@
 import { useState, useRef } from "react";
-import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import { 
   Search, Upload, Key, FileText, FileCode, CheckCircle, 
@@ -17,27 +16,10 @@ export default function NfeConsultationPage() {
   const [showModal, setShowModal] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Mutação para consulta via chave (Scraper)
-  const nfeMutation = trpc.nfe.consultar.useMutation({
-    onSuccess: (data) => {
-      setResultData(data);
-      setShowModal(true);
-      toast.success("Consulta realizada com sucesso!");
-    },
-    onError: (error) => {
-      toast.error(`Erro na consulta: ${error.message}`);
-    }
-  });
-
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (nfeKey.length !== 44) {
-      toast.error("A chave de acesso deve ter 44 dígitos.");
-      return;
-    }
-    setIsLoading(true);
-    nfeMutation.mutate({ chave: nfeKey }, {
-      onSettled: () => setIsLoading(false)
+    toast.info("A consulta via chave de acesso requer backend. Utilize a aba 'Upload XML' para processar notas localmente.", {
+        duration: 5000
     });
   };
 

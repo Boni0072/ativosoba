@@ -1,8 +1,7 @@
 import { useState, useEffect } from "react";
 import { db, storage } from "@/lib/firebase";
-import { collection, onSnapshot } from "firebase/firestore";
+import { collection, onSnapshot, query, where, addDoc, updateDoc, deleteDoc, doc } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { trpc } from "@/lib/trpc";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
@@ -25,23 +24,26 @@ export default function ExpensesPage() {
   }, []);
 
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const { data: expenses, isLoading, refetch } = trpc.expenses.listByProject.useQuery(
-    { projectId: selectedProjectId || "" },
-    { enabled: !!selectedProjectId }
-  );
+  const [expenses, setExpenses] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    if (selectedProjectId) {
+      setIsLoading(true);
+      const q = query(collection(db, "expenses"), where("projectId", "==", String(selectedProjectId)));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setExpenses(data);
+        setIsLoading(false);
+      });
+      return () => unsubscribe();
+    } else {
+      setExpenses([]);
+    }
+  }, [selectedProjectId]);
 
   const selectedProject = projects?.find(p => String(p.id) === String(selectedProjectId));
-  // Bloqueia despesas se o projeto já foi aprovado pela diretoria (status 'aprovado', 'em_andamento', 'concluido')
-  const isBlocked = selectedProject?.status === 'aprovado' || selectedProject?.status === 'em_andamento' || selectedProject?.status === 'concluido';
 
-  const { data: assets } = trpc.assets.list.useQuery(
-    { projectId: selectedProjectId || undefined },
-    { enabled: !!selectedProjectId }
-  );
-
-  const createMutation = trpc.expenses.create.useMutation();
-  const updateMutation = trpc.expenses.update.useMutation();
-  const deleteMutation = trpc.expenses.delete.useMutation();
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [nfeKey, setNfeKey] = useState("");
@@ -57,12 +59,32 @@ export default function ExpensesPage() {
     attachment: null as File | null,
     invoiceNumber: "",
     ncm: "",
+    projectId: null as string | null,
     cfop: "",
     unit: "",
   });
   const [nfeProducts, setNfeProducts] = useState<any[]>([]);
 
-  // const fetchNfeMutation = trpc.expenses.fetchNfeData.useMutation(); // Removido para simulação
+  const [assets, setAssets] = useState<any[] | null>(null);
+
+  useEffect(() => {
+    if (formData.projectId) {
+      setAssets(null);
+      const q = query(collection(db, "assets"), where("projectId", "==", String(formData.projectId)));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setAssets(data);
+      });
+      return () => unsubscribe();
+    } else {
+      setAssets(null);
+    }
+  }, [formData.projectId]);
+
+  const selectedProjectForForm = projects?.find(p => String(p.id) === String(formData.projectId));
+  // Bloqueia despesas se o projeto já foi aprovado pela diretoria (status 'aprovado', 'em_andamento', 'concluido')
+  const isBlocked = selectedProjectForForm?.status === 'aprovado' || selectedProjectForForm?.status === 'em_andamento' || selectedProjectForForm?.status === 'concluido';
+
 
   const resetForm = () => {
     setFormData({
@@ -77,6 +99,7 @@ export default function ExpensesPage() {
       attachment: null,
       invoiceNumber: "",
       ncm: "",
+      projectId: null,
       cfop: "",
       unit: "",
     });
@@ -85,91 +108,11 @@ export default function ExpensesPage() {
     setNfeKey("");
   };
 
-  const nfeMutation = trpc.nfe.consultar.useMutation({
-    onSuccess: (data) => {
-      toast.success("Dados da NF-e importados com sucesso!", {
-        id: "fetch-nfe",
-        description: "Dados extraídos do portal da NF-e.",
-      });
-
-      let formDescription = data.description;
-      let formAmount = data.amount ? String(data.amount) : formData.amount;
-      let formQuantity = "1";
-      let formNotes = `NF-e: ${nfeKey}. ${data.notes || ''}`.trim();
-      let formNcm = "";
-      let formCfop = "";
-      let formUnit = "";
-
-      setNfeProducts(data.products || []);
-
-      if (data.products && data.products.length > 0) {
-          if (data.products.length === 1) {
-              const p = data.products[0];
-              formDescription = p.description;
-              formAmount = String(p.totalPrice);
-              formQuantity = String(p.quantity);
-              formNcm = p.ncm || "";
-              formCfop = p.cfop || "";
-              formUnit = p.unit || "";
-              formNotes += `\n\nDetalhes do Item:\nCód: ${p.code}\nNCM: ${p.ncm}\nCFOP: ${p.cfop}\nUnidade: ${p.unit}`;
-          } else {
-              formDescription = `NF-e ${nfeKey} - ${data.products.length} itens`;
-              formNotes += "\n\nItens da Nota:\n" + data.products.map((p: any) => `- ${p.description} (${p.quantity} ${p.unit}) R$ ${p.totalPrice.toFixed(2)} | NCM: ${p.ncm} | CFOP: ${p.cfop}`).join("\n");
-          }
-      }
-
-      let attachmentFile = null;
-      if (data.pdfBase64) {
-          try {
-              const byteCharacters = atob(data.pdfBase64);
-              const byteNumbers = new Array(byteCharacters.length);
-              for (let i = 0; i < byteCharacters.length; i++) {
-                  byteNumbers[i] = byteCharacters.charCodeAt(i);
-              }
-              const byteArray = new Uint8Array(byteNumbers);
-              const blob = new Blob([byteArray], { type: "application/pdf" });
-              attachmentFile = new File([blob], `NFe-${nfeKey}.pdf`, { type: "application/pdf" });
-              toast.success("PDF da Nota Fiscal baixado e anexado automaticamente!");
-          } catch (e) {
-              console.error("Erro ao converter PDF", e);
-          }
-      }
-
-      // Tenta extrair o número da nota da chave de acesso (posições 26-34)
-      let extractedInvoiceNumber = "";
-      if (nfeKey && nfeKey.length === 44) {
-        extractedInvoiceNumber = parseInt(nfeKey.substring(25, 34)).toString();
-      }
-
-      setFormData(prev => ({
-        ...prev,
-        description: formDescription || prev.description,
-        amount: formAmount,
-        quantity: formQuantity,
-        date: data.date && !isNaN(new Date(data.date).getTime()) ? new Date(data.date).toISOString().split("T")[0] : prev.date,
-        notes: formNotes,
-        attachment: attachmentFile || prev.attachment,
-        invoiceNumber: extractedInvoiceNumber || prev.invoiceNumber,
-        ncm: formNcm || prev.ncm,
-        cfop: formCfop || prev.cfop,
-        unit: formUnit || prev.unit
-      }));
-    },
-    onError: (error) => {
-      const errorMessage = error instanceof Error ? error.message : "Erro desconhecido.";
-      toast.error("Falha ao buscar dados da NF-e.", { id: "fetch-nfe", description: errorMessage });
-    },
-    onMutate: () => {
-      toast.info("Buscando dados da NF-e... O navegador pode abrir para resolver o Captcha.", { id: "fetch-nfe", duration: 10000 });
-    }
-  });
+  // Simulação de consulta NF-e (Backend removido)
+  const isNfeLoading = false;
 
   const handleFetchNfe = async () => {
-    if (!nfeKey || nfeKey.length !== 44) {
-      toast.error("Por favor, insira uma chave de acesso válida com 44 dígitos.");
-      return;
-    }
-    nfeMutation.mutate({ chave: nfeKey });
+    toast.info("A consulta automática de NF-e requer backend configurado. Utilize o upload de XML para importar dados.");
   };
 
   const handleAttachmentChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -243,7 +186,13 @@ export default function ExpensesPage() {
 
   const handleOpenChange = (isOpen: boolean) => {
     setOpen(isOpen);
-    if (!isOpen) resetForm();
+    if (isOpen) {
+      if (!editingId) {
+        setFormData(prev => ({ ...prev, projectId: selectedProjectId }));
+      }
+    } else {
+      resetForm();
+    }
   };
 
   const handleEdit = (expense: any) => {
@@ -260,6 +209,7 @@ export default function ExpensesPage() {
       invoiceNumber: expense.invoiceNumber || "",
       ncm: expense.ncm || "",
       cfop: expense.cfop || "",
+      projectId: expense.projectId,
       unit: expense.unit || "",
     });
     setEditingId(expense.id);
@@ -268,7 +218,7 @@ export default function ExpensesPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedProjectId) {
+    if (!formData.projectId) {
       toast.error("Selecione uma obra");
       return;
     }
@@ -293,7 +243,7 @@ export default function ExpensesPage() {
     }
 
     const submissionData = {
-      projectId: selectedProjectId,
+      projectId: formData.projectId,
       description: formData.description,
       amount: formData.amount,
       quantity: Number(formData.quantity) || 1,
@@ -313,18 +263,23 @@ export default function ExpensesPage() {
 
     try {
       if (editingId) {
-        await updateMutation.mutateAsync({
-          id: editingId,
+        const docRef = doc(db, "expenses", editingId);
+        await updateDoc(docRef, {
           ...submissionData,
+          date: new Date(formData.date).toISOString(), // Ensure date is ISO
+          updatedAt: new Date().toISOString()
         });
         toast.success("Despesa atualizada com sucesso!");
       } else {
-        await createMutation.mutateAsync(submissionData);
+        await addDoc(collection(db, "expenses"), {
+          ...submissionData,
+          date: new Date(formData.date).toISOString(),
+          createdAt: new Date().toISOString()
+        });
         toast.success("Despesa criada com sucesso!");
       }
       setOpen(false);
       resetForm();
-      refetch();
     } catch (error: any) {
       toast.error(error.message || (editingId ? "Erro ao atualizar despesa" : "Erro ao criar despesa"));
     }
@@ -333,9 +288,8 @@ export default function ExpensesPage() {
   const handleDelete = async (id: string) => {
     if (!confirm("Tem certeza que deseja excluir esta despesa?")) return;
     try {
-      await deleteMutation.mutateAsync({ id });
+      await deleteDoc(doc(db, "expenses", id));
       toast.success("Despesa deletada com sucesso!");
-      refetch();
     } catch (error: any) {
       toast.error(error.message || "Erro ao deletar despesa");
     }
@@ -375,9 +329,9 @@ export default function ExpensesPage() {
                     type="button"
                     variant="secondary"
                     onClick={handleFetchNfe}
-                    disabled={nfeMutation.isPending}
+                    disabled={isNfeLoading}
                   >
-                    {nfeMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Buscar"}
+                    {isNfeLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Buscar"}
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground pt-2">
@@ -386,7 +340,7 @@ export default function ExpensesPage() {
               </div>
               <div>
                 <label className="text-sm font-medium">Obra</label>
-                <Select value={selectedProjectId || ""} onValueChange={(v) => setSelectedProjectId(v)}>
+                <Select value={formData.projectId || ""} onValueChange={(v) => setFormData(prev => ({ ...prev, projectId: v, assetId: null }))}>
                   <SelectTrigger>
                     <SelectValue placeholder="Selecione uma obra" />
                   </SelectTrigger>
@@ -400,7 +354,7 @@ export default function ExpensesPage() {
                 </Select>
               </div>
 
-              {selectedProjectId && isBlocked && !editingId && (
+              {formData.projectId && isBlocked && !editingId && (
                 <div className="flex items-center gap-2 p-3 text-sm text-yellow-800 bg-yellow-50 border border-yellow-200 rounded-md">
                   <AlertTriangle size={16} />
                   <span>Projeto aprovado/concluído. Despesas bloqueadas.</span>
@@ -483,11 +437,13 @@ export default function ExpensesPage() {
                 <div>
                   <label className="text-sm font-medium">Vincular ao Ativo</label>
                   <Select 
+                    key={`${formData.projectId || "no-project"}-${assets?.length || 0}`} // Força atualização ao carregar ativos
+                    disabled={!formData.projectId}
                     value={formData.assetId === null ? "none" : String(formData.assetId)} 
-                    onValueChange={(v) => setFormData({ ...formData, assetId: v === "none" ? null : v })}
+                    onValueChange={(v) => setFormData(prev => ({ ...prev, assetId: v === "none" ? null : v }))}
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Selecione um ativo (Opcional)" />
+                      <SelectValue placeholder={(!assets && formData.projectId) ? "Carregando..." : "Selecione um ativo (Opcional)"} />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="none">Nenhum</SelectItem>
@@ -607,8 +563,8 @@ export default function ExpensesPage() {
               </div>
             </div>
             <DialogFooter className="pt-4">
-              <Button type="submit" className="w-full" disabled={createMutation.isPending || updateMutation.isPending || (isBlocked && !editingId)}>
-                {createMutation.isPending || updateMutation.isPending ? "Salvando..." : (editingId ? "Atualizar Despesa" : "Registrar Despesa")}
+              <Button type="submit" className="w-full" disabled={(isBlocked && !editingId)}>
+                {editingId ? "Atualizar Despesa" : "Registrar Despesa"}
               </Button>
             </DialogFooter>
             </form>
@@ -720,7 +676,6 @@ export default function ExpensesPage() {
                             size="icon"
                             className="h-8 w-8"
                         onClick={() => handleDelete(expense.id)}
-                        disabled={deleteMutation.isPending}
                       >
                             <Trash2 size={16} className="text-red-600" />
                           </Button>
