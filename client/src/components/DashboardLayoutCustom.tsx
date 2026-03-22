@@ -341,7 +341,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     { id: 'assets', label: 'Cadastro de Ativos', icon: Package, path: '/assets' },
     { id: 'asset-movements', label: 'Movimentações', icon: ArrowRightLeft, path: '/asset-movements', notificationCount: pendingMovements.length },
     { id: 'asset-depreciation', label: 'Depreciação', icon: TrendingDown, path: '/asset-depreciation' },
-    { id: 'inventory', label: 'Inventário de Ativos', icon: ClipboardList, path: '/inventory', notificationCount: pendingInventoryCount + pendingInventoryApprovalCount },
+    { id: 'inventory', label: 'Inventários', icon: ClipboardList, path: '/inventory', notificationCount: pendingInventoryCount + pendingInventoryApprovalCount },
     { id: 'reports', label: 'Relatórios', icon: BarChart3, path: '/reports' },
     { id: 'accounting', label: 'Estrutura Contábil', icon: Landmark, path: '/accounting' },
     { id: 'users', label: 'Usuários', icon: Users, path: '/users' },

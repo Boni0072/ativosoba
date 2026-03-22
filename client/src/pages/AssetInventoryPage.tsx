@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
 import { useLocation } from "wouter";
 import {
   Pagination,
@@ -1256,6 +1257,71 @@ export default function AssetInventoryPage() {
     }
   };
 
+  const handleExportHistoryToExcel = () => {
+    if (completedSchedules.length === 0) {
+      toast.error("Não há histórico para exportar.");
+      return;
+    }
+
+    const data = completedSchedules.map(schedule => {
+        const requestDate = schedule.createdAt ? getDate(schedule.createdAt).toLocaleString('pt-BR') : "-";
+        const scheduledDate = getDate(schedule.date).toLocaleDateString('pt-BR');
+        const executionDate = schedule.completedAt ? getDate(schedule.completedAt).toLocaleString('pt-BR') : "-";
+        const approvalDate = schedule.approvedAt ? getDate(schedule.approvedAt).toLocaleString('pt-BR') : "-";
+        
+        const responsibles = schedule.userIds.map(uid => {
+            const u = users.find(user => String(user.id) === String(uid));
+            return u?.name || "Usuário";
+        }).join(", ");
+
+        let ccs = "";
+        if (schedule.costCenterCodes && schedule.costCenterCodes.length > 0) {
+            ccs = schedule.costCenterCodes.join(", ");
+        } else {
+            ccs = Array.from(new Set(schedule.assetIds.map(id => {
+                const a = assets.find(asset => asset.id === id);
+                return typeof a?.costCenter === 'object' ? (a.costCenter as any).code : a?.costCenter;
+            }).filter(Boolean))).join(", ");
+        }
+
+        const assetsList = schedule.assetIds.map(assetId => {
+            const asset = assets.find(a => a.id === assetId);
+            return `${asset?.tagNumber || "S/P"} - ${asset?.name || "Desconhecido"}`;
+        }).join("; ");
+
+        return {
+            "Data Solicitação": requestDate,
+            "Data Agendada": scheduledDate,
+            "Data Execução": executionDate,
+            "Responsáveis": responsibles,
+            "Data Aprovação": approvalDate,
+            "Aprovado Por": schedule.approvedBy || "-",
+            "Centro de Custo": ccs,
+            "Ativos": assetsList
+        };
+    });
+
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Histórico");
+    
+    // Largura automática para colunas
+    const wscols = [
+        { wch: 20 }, // Solicitação
+        { wch: 15 }, // Agendada
+        { wch: 20 }, // Execução
+        { wch: 30 }, // Responsáveis
+        { wch: 20 }, // Aprovação
+        { wch: 20 }, // Aprovador
+        { wch: 20 }, // CC
+        { wch: 50 }  // Ativos
+    ];
+    ws['!cols'] = wscols;
+
+    XLSX.writeFile(wb, `historico_inventarios_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Histórico exportado para Excel com sucesso!");
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
@@ -1836,9 +1902,15 @@ export default function AssetInventoryPage() {
               <ClipboardList className="h-5 w-5" />
               Histórico de Inventários Concluídos
             </CardTitle>
-            <Button variant="ghost" size="sm" onClick={() => setIsHistoryExpanded(!isHistoryExpanded)}>
-              {isHistoryExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={handleExportHistoryToExcel}>
+                <Download className="mr-2 h-4 w-4" />
+                Exportar Excel
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setIsHistoryExpanded(!isHistoryExpanded)}>
+                {isHistoryExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </Button>
+            </div>
           </div>
         </CardHeader>
         {isHistoryExpanded && (
@@ -1846,20 +1918,58 @@ export default function AssetInventoryPage() {
           <Table className="text-lg">
             <TableHeader>
               <TableRow>
-                <TableHead className="text-lg">Data</TableHead>
+                <TableHead className="text-lg">Solicitado</TableHead>
+                <TableHead className="text-lg">Agendado</TableHead>
+                <TableHead className="text-lg">Executado</TableHead>
+                <TableHead className="text-lg">Aprovado</TableHead>
+                <TableHead className="text-lg">Centro de Custo</TableHead>
+                <TableHead className="text-lg">Ativos</TableHead>
                 <TableHead className="text-lg">Responsáveis</TableHead>
                 <TableHead className="text-lg">Aprovado Por</TableHead>
-                <TableHead className="text-lg">Data Aprovação</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {completedSchedules.map(schedule => (
                 <TableRow key={schedule.id}>
                   <TableCell className="text-lg">
+                    {schedule.createdAt ? getDate(schedule.createdAt).toLocaleString('pt-BR') : "-"}
+                  </TableCell>
+                  <TableCell className="text-lg">
+                    {getDate(schedule.date).toLocaleDateString('pt-BR')}
+                  </TableCell>
+                  <TableCell className="text-lg">
+                    {schedule.completedAt ? getDate(schedule.completedAt).toLocaleString('pt-BR') : "-"}
+                  </TableCell>
+                  <TableCell className="text-lg">
+                    {schedule.approvedAt ? getDate(schedule.approvedAt).toLocaleString('pt-BR') : "-"}
+                  </TableCell>
+                  <TableCell className="text-lg">
                     {(() => {
-                        const d = (schedule.date as any)?.toDate ? (schedule.date as any).toDate() : new Date(schedule.date);
-                        return d.toLocaleDateString('pt-BR');
+                        if (schedule.costCenterCodes && schedule.costCenterCodes.length > 0) {
+                            return schedule.costCenterCodes.join(", ");
+                        }
+                        const ccs = Array.from(new Set(schedule.assetIds.map(id => {
+                            const a = assets.find(asset => asset.id === id);
+                            return typeof a?.costCenter === 'object' ? (a.costCenter as any).code : a?.costCenter;
+                        }).filter(Boolean)));
+                        
+                        if (ccs.length === 0) return "-";
+                        if (ccs.length > 2) return `${ccs.slice(0, 2).join(", ")} (+${ccs.length - 2})`;
+                        return ccs.join(", ");
                     })()}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex flex-col gap-1 max-h-[150px] overflow-y-auto pr-2">
+                      {schedule.assetIds.map(assetId => {
+                        const asset = assets.find(a => a.id === assetId);
+                        return (
+                          <div key={assetId} className="text-base border-b border-slate-100 last:border-0 py-1">
+                            <span className="font-bold text-slate-700">{asset?.tagNumber || "S/P"}</span>
+                            <span className="text-slate-600 ml-2">{asset?.name || "Desconhecido"}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-col gap-1">
@@ -1870,15 +1980,11 @@ export default function AssetInventoryPage() {
                     </div>
                   </TableCell>
                   <TableCell className="text-lg">{schedule.approvedBy || "-"}</TableCell>
-                  <TableCell className="text-lg">{schedule.approvedAt ? (() => {
-                      const d = (schedule.approvedAt as any)?.toDate ? (schedule.approvedAt as any).toDate() : new Date(schedule.approvedAt);
-                      return d.toLocaleString('pt-BR');
-                  })() : "-"}</TableCell>
                 </TableRow>
               ))}
               {completedSchedules.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={4} className="text-center py-8 text-muted-foreground text-lg">
+                  <TableCell colSpan={8} className="text-center py-8 text-muted-foreground text-lg">
                     Nenhum inventário concluído.
                   </TableCell>
                 </TableRow>
