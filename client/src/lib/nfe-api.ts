@@ -1,3 +1,6 @@
+import { toast } from "sonner";
+import { playErrorSound } from "./utils";
+
 export interface NfeProduct {
   code: string;
   description: string;
@@ -24,6 +27,11 @@ export const nfeApi = {
   consultar: async (chave: string): Promise<NfeData> => {
     // Backend removido. A consulta automática via chave requer servidor proxy.
     // O sistema agora utiliza o processamento local de XML.
-    throw new Error("A consulta online está desativada na versão 'apenas frontend'. Por favor, faça o upload do arquivo XML da nota.");
+    const msg = "A consulta online está desativada na versão 'apenas frontend'. Por favor, faça o upload do arquivo XML da nota.";
+    
+    playErrorSound();
+    toast.error("Funcionalidade Indisponível", { description: "Use o upload de XML." });
+    
+    throw new Error(msg);
   }
 };

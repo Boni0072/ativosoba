@@ -26,7 +26,7 @@ export const AVAILABLE_PAGES = [
   { id: "dashboard", label: "Dashboard" },
   { id: "projects", label: "Obras" },
   { id: "budgets", label: "Budgets" },
-  { id: "assets", label: "Ativo em andamento" },
+  { id: "assets", label: "Cadastro de Ativos" },
   { id: "asset-movements", label: "Movimentações" },
   { id: "asset-depreciation", label: "Depreciação" },
   { id: "inventory", label: "Inventário de Ativos" },

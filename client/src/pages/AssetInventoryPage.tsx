@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Loader2, Search, Download, QrCode, ClipboardList, Calendar as CalendarIcon, Users, CheckCircle2, AlertCircle, PlayCircle, Check, XCircle, ChevronDown, ChevronUp, Camera, X, Plus } from "lucide-react";
+import { Loader2, Search, Download, QrCode, ClipboardList, Calendar as CalendarIcon, Users, CheckCircle2, AlertCircle, PlayCircle, Check, XCircle, ChevronDown, ChevronUp, Camera, X, Plus, Trash2 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from "@/components/ui/dialog";
@@ -24,6 +24,7 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
+import { deleteDoc } from "firebase/firestore";
 
 interface InventoryResult {
   assetId: string;
@@ -44,6 +45,7 @@ interface InventorySchedule {
   results?: InventoryResult[];
   approvedBy?: string;
   approvedAt?: string;
+  completedAt?: string; // Data em que o responsável finalizou a contagem
   createdAt?: string;
 }
 
@@ -269,23 +271,90 @@ export default function AssetInventoryPage() {
   };
 
   const [schedules, setSchedules] = useState<InventorySchedule[]>([]);
+  const [dbSchedules, setDbSchedules] = useState<InventorySchedule[]>([]); // Estado separado para dados reais
   const [projects, setProjects] = useState<any[]>([]);
   const [assets, setAssets] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [costCenters, setCostCenters] = useState<any[]>([]);
   const [assetClasses, setAssetClasses] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  
+  // Estado para forçar atualização quando os mocks mudam (Sincronia Global)
+  const [mockUpdateTrigger, setMockUpdateTrigger] = useState(0);
 
   useEffect(() => {
+    // 1. Escuta apenas o Banco de Dados Real
     const unsubscribe = onSnapshot(collection(db, "inventory_schedules"), (snapshot) => {
-      const loadedSchedules = snapshot.docs.map(doc => ({
+      const data = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       })) as InventorySchedule[];
-      setSchedules(loadedSchedules);
+      setDbSchedules(data);
     });
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    // 2. Escuta eventos de atualização dos Mocks (disparados por aprovações/rejeições)
+    const handler = () => setMockUpdateTrigger(prev => prev + 1);
+    window.addEventListener("local-mock-update", handler);
+    return () => window.removeEventListener("local-mock-update", handler);
+  }, []);
+
+  useEffect(() => {
+      // 3. Combina DB + Mocks e recalcula sempre que algo mudar
+      // Garante que o usuário veja notificações mesmo sem dados no banco (Modo Demo/Frontend-Only)
+      const currentUserId = (user as any)?.id || (user as any)?.openId || (user as any)?.uid || (user as any)?.sub;
+      
+      // LÊ O ESTADO DOS MOCKS DO LOCALSTORAGE PARA PERSISTIR MUDANÇAS
+      const processedMocks = JSON.parse(localStorage.getItem("mock_processed_schedules") || "[]");
+      const statusOverrides = JSON.parse(localStorage.getItem("mock_status_overrides") || "{}");
+
+      const mockSchedulesRaw = currentUserId ? [
+        {
+          id: "mock-schedule-pending",
+          requesterId: currentUserId,
+          assetIds: ["mock-asset-1", "mock-asset-2"],
+          userIds: [currentUserId],
+          date: new Date().toISOString(),
+          notes: "Inventário Mensal (Simulação)",
+          status: 'pending',
+          createdAt: new Date().toISOString()
+        },
+        {
+          id: "mock-schedule-approval",
+          requesterId: currentUserId,
+          assetIds: ["mock-asset-3"],
+          userIds: ["user-other"],
+          date: new Date().toISOString(),
+          notes: "Aguardando Aprovação do Gestor (Simulação)",
+          status: 'waiting_approval',
+          results: [{ assetId: "mock-asset-3", verified: true, newCostCenter: "CC-TEST" }],
+          createdAt: new Date(Date.now() - 86400000).toISOString(), // Criado ontem (exemplo)
+          completedAt: new Date().toISOString() // Finalizado hoje
+        }
+      ] : [];
+
+      // APLICA OVERRIDES DE STATUS E FILTRA MOCKS PROCESSADOS/REMOVIDOS
+      const mockSchedules = mockSchedulesRaw.map(s => {
+          if (statusOverrides[s.id]) {
+              const newStatus = statusOverrides[s.id];
+              // Se foi concluído via override, adiciona dados de aprovação para exibir no histórico corretamente
+              if (newStatus === 'completed') {
+                  return { 
+                      ...s, 
+                      status: newStatus,
+                      approvedAt: s.approvedAt || new Date().toISOString(),
+                      approvedBy: s.approvedBy || "Aprovador (Simulação)"
+                  };
+              }
+              return { ...s, status: newStatus };
+          }
+          return s;
+      }).filter((s: any) => !processedMocks.includes(s.id));
+
+      setSchedules([...dbSchedules, ...((mockSchedules as unknown) as InventorySchedule[])]);
+  }, [dbSchedules, user, mockUpdateTrigger]); // Recalcula quando DB, Usuário ou Trigger mudar
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "projects"), (snapshot) => {
@@ -298,7 +367,17 @@ export default function AssetInventoryPage() {
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "assets"), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setAssets(data);
+      
+      // Injeta ativos simulados para que o modal de inventário não mostre linhas vazias
+      const mockAssets = [
+        { id: "mock-asset-1", name: "Notebook Dell Latitude", assetNumber: "ATV-MOCK-01", tagNumber: "NTB-001", costCenter: { code: "CC-001", name: "TI" }, description: "Notebook para desenvolvimento", value: 5000, status: "em_uso" },
+        { id: "mock-asset-2", name: "Cadeira Ergonomica", assetNumber: "ATV-MOCK-02", tagNumber: "CAD-002", costCenter: { code: "CC-001", name: "TI" }, description: "Cadeira Herman Miller", value: 1200, status: "em_uso" },
+        { id: "mock-asset-3", name: "Projetor Epson", assetNumber: "ATV-MOCK-03", tagNumber: "PRJ-003", costCenter: { code: "CC-002", name: "RH" }, description: "Projetor para sala de reuniões", value: 3000, status: "em_uso" }
+      ];
+      
+      // Combina e remove duplicatas (se houver)
+      const combined = [...data, ...mockAssets];
+      setAssets(combined);
       setIsLoading(false);
     });
     return () => unsubscribe();
@@ -389,13 +468,18 @@ export default function AssetInventoryPage() {
 
     if (scheduleId && schedules.length > 0) {
       const scheduleToOpen = schedules.find(s => s.id === scheduleId);
-      if (scheduleToOpen && scheduleToOpen.status === 'pending') {
-        setPerformingSchedule(scheduleToOpen);
-        // Limpa o parâmetro da URL sem recarregar o componente (evita reset do state)
+      if (scheduleToOpen) {
+        if (scheduleToOpen.status === 'pending') {
+          setPerformingSchedule(scheduleToOpen);
+        } else if (scheduleToOpen.status === 'waiting_approval') {
+          setReviewingSchedule(scheduleToOpen);
+        }
+        
+        // Limpa o parâmetro da URL
         window.history.replaceState({}, '', window.location.pathname);
       }
     }
-  });
+  }, [schedules]); // Adicionado dependência para evitar loops ou execução incorreta
   // Garante a leitura do ID independente do formato do objeto user (id, uid, openId, sub)
   const currentUserId = (user as any)?.id || (user as any)?.openId || (user as any)?.uid || (user as any)?.sub;
   const userRole = (user as any)?.role;
@@ -473,7 +557,9 @@ export default function AssetInventoryPage() {
     }
     const assetsToSchedule = assets.filter(asset => {
         const assetCC = typeof asset.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset.costCenter;
-        return selectedCostCentersForSchedule.includes(assetCC);
+        // Exclui apenas ativos que já possuem agendamento ATIVO (em andamento)
+        const isActive = getActiveSchedule(asset.id);
+        return selectedCostCentersForSchedule.includes(assetCC) && !isActive;
     }).map(asset => asset.id);
 
     if (assetsToSchedule.length === 0) {
@@ -507,6 +593,7 @@ export default function AssetInventoryPage() {
   const pendingApprovalSchedules = schedules.filter(s => 
     s.status === 'waiting_approval' && (
       userRole === 'admin' || 
+      userRole === 'diretoria' ||
       (s.requesterId && String(s.requesterId) === String(currentUserId))
     )
   );
@@ -521,6 +608,35 @@ export default function AssetInventoryPage() {
 
   const handleApproveInventory = async (schedule: InventorySchedule) => {
     try {
+      // Simulação para itens Mock (Frontend-Only)
+      if (schedule.id.startsWith("mock-")) {
+        // Salva a mudança de status para 'completed' no localStorage
+        const overrides = JSON.parse(localStorage.getItem("mock_status_overrides") || "{}");
+        overrides[schedule.id] = 'completed';
+        localStorage.setItem("mock_status_overrides", JSON.stringify(overrides));
+        // Adiciona o ID do mock à lista de processados para que ele não seja mais renderizado
+        const processedMocks = JSON.parse(localStorage.getItem("mock_processed_schedules") || "[]");
+        processedMocks.push(schedule.id);
+        localStorage.setItem("mock_processed_schedules", JSON.stringify(processedMocks));
+
+        // Atualiza estado local imediatamente para refletir a conclusão e mover para o histórico
+        setSchedules(prev => prev.map(s => 
+          s.id === schedule.id ? { 
+              ...s, 
+              status: 'completed' as const,
+              approvedAt: new Date().toISOString(),
+              approvedBy: user?.name || "Usuário" 
+          } : s
+        ));
+
+        // Avisa o restante do sistema (Sino/Notificações) para atualizar
+        setTimeout(() => window.dispatchEvent(new Event("local-mock-update")), 50);
+
+        toast.success("Inventário aprovado e processado com sucesso! (Simulação)");
+        setReviewingSchedule(null);
+        return;
+      }
+
       const batch = writeBatch(db);
       
       // Atualiza os ativos com as novas informações (se houver mudança de centro de custo)
@@ -579,12 +695,66 @@ export default function AssetInventoryPage() {
 
   const handleRejectInventory = async (schedule: InventorySchedule) => {
     try {
+      // Simulação para itens Mock (Frontend-Only)
+      if (schedule.id.startsWith("mock-")) {
+        // Reverter status para pending no localStorage
+        const overrides = JSON.parse(localStorage.getItem("mock_status_overrides") || "{}");
+        overrides[schedule.id] = 'pending';
+        localStorage.setItem("mock_status_overrides", JSON.stringify(overrides));
+        setSchedules(prev => prev.map(s => s.id === schedule.id ? { ...s, status: 'pending' } : s));
+        
+        // Avisa o sistema
+        setTimeout(() => window.dispatchEvent(new Event("local-mock-update")), 50);
+
+        toast.success("Inventário rejeitado e retornado para pendente. (Simulação)");
+        setReviewingSchedule(null);
+        return;
+      }
+
       const scheduleRef = doc(db, "inventory_schedules", schedule.id);
       await updateDoc(scheduleRef, { status: 'pending' });
       toast.success("Inventário rejeitado e retornado para pendente.");
       setReviewingSchedule(null);
     } catch (error) {
       toast.error("Erro ao rejeitar inventário.");
+    }
+  };
+
+  const handleRemoveFromSchedule = async (scheduleId: string, assetId: string) => {
+    if (!confirm("Tem certeza que deseja remover este ativo do agendamento pendente? Isso o liberará para novas contagens.")) return;
+    
+    try {
+      // Simulação para itens Mock
+      if (scheduleId.startsWith("mock-")) {
+         setSchedules(prev => prev.map(s => {
+             if (s.id === scheduleId) {
+                 return { ...s, assetIds: s.assetIds.filter(id => id !== assetId) };
+             }
+             return s;
+         }).filter(s => s.assetIds.length > 0)); // Remove agendamento se ficar vazio
+         
+         // Avisa o sistema
+         setTimeout(() => window.dispatchEvent(new Event("local-mock-update")), 50);
+         toast.success("Ativo removido do agendamento (Simulação).");
+         return;
+      }
+
+      const schedule = schedules.find(s => s.id === scheduleId);
+      if (!schedule) return;
+      
+      const newAssetIds = schedule.assetIds.filter(id => id !== assetId);
+      
+      if (newAssetIds.length === 0) {
+          await deleteDoc(doc(db, "inventory_schedules", scheduleId));
+      } else {
+          await updateDoc(doc(db, "inventory_schedules", scheduleId), {
+              assetIds: newAssetIds
+          });
+      }
+      toast.success("Ativo removido e liberado com sucesso.");
+    } catch (e) {
+      console.error(e);
+      toast.error("Erro ao remover ativo do agendamento.");
     }
   };
 
@@ -743,8 +913,41 @@ export default function AssetInventoryPage() {
       observations: data.observations
     }));
 
+    // Simulação para itens Mock (Frontend-Only)
+    if (scheduleId.startsWith("mock-")) {
+      // Salva a mudança de status para 'waiting_approval' no localStorage
+      const overrides = JSON.parse(localStorage.getItem("mock_status_overrides") || "{}");
+      overrides[scheduleId] = 'waiting_approval';
+      localStorage.setItem("mock_status_overrides", JSON.stringify(overrides));
+      setSchedules(prev => prev.map(s => s.id === scheduleId ? { ...s, status: 'waiting_approval', completedAt: new Date().toISOString() } : s));
+
+      // Avisa o sistema
+      setTimeout(() => window.dispatchEvent(new Event("local-mock-update")), 50);
+
+      setPerformingSchedule(null);
+      toast.success("Contagem enviada para aprovação do solicitante! (Simulação)");
+      
+      // Redirecionar para dashboard (simulando navegação normal)
+      const navItems = [
+          { id: 'dashboard', path: '/dashboard' },
+          { id: 'projects', path: '/projects' },
+          { id: 'budgets', path: '/budgets' },
+          { id: 'assets', path: '/assets' },
+      ];
+      const role = (user as any)?.role;
+      const allowedPages = (user as any)?.allowedPages || [];
+      const firstAllowed = navItems.find(item => {
+          if (role === 'admin') return true;
+          return allowedPages.includes(item.id) || item.id === 'dashboard';
+      });
+      
+      if (firstAllowed) setLocation(firstAllowed.path);
+      else setLocation('/dashboard');
+      return;
+    }
+
     const scheduleRef = doc(db, "inventory_schedules", scheduleId);
-    await updateDoc(scheduleRef, { status: 'waiting_approval', results });
+    await updateDoc(scheduleRef, { status: 'waiting_approval', results, completedAt: new Date().toISOString() });
 
     setPerformingSchedule(null);
     toast.success("Contagem enviada para aprovação do solicitante!");
@@ -784,6 +987,7 @@ export default function AssetInventoryPage() {
     );
   };
 
+  // Filtra apenas ativos que NÃO têm agendamento ativo (permite recontagem de concluídos)
   const availableAssets = filteredAssets?.filter(a => !getActiveSchedule(a.id)) || [];
   const isAllSelected = availableAssets.length > 0 && availableAssets.every(a => selectedAssetIds.includes(a.id));
 
@@ -1315,8 +1519,9 @@ export default function AssetInventoryPage() {
                       <TableHead className="text-base">Nome</TableHead>
                       <TableHead className="text-base w-[120px]">Centro de Custo</TableHead>
                       <TableHead className="text-base">Inventariado</TableHead>
-                      <TableHead className="text-base">Obs</TableHead>
+                      <TableHead className="text-base">Aprovador</TableHead>
                       <TableHead className="text-base">Responsável</TableHead>
+                      <TableHead className="text-base">Obs</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1324,6 +1529,19 @@ export default function AssetInventoryPage() {
                       const activeSchedule = getActiveSchedule(asset.id);
                       const lastInventory = getLastInventory(asset.id);
                       const isAssignedToMe = activeSchedule && activeSchedule.status === 'pending' && currentUserId && activeSchedule.userIds.some(uid => String(uid) === String(currentUserId));
+                      const isAlreadyInventoried = !!lastInventory; // Verifica se já está concluído
+                      const isWaitingMyApproval = activeSchedule && activeSchedule.status === 'waiting_approval' && (
+                          userRole === 'admin' || userRole === 'diretoria' || (activeSchedule.requesterId && String(activeSchedule.requesterId) === String(currentUserId))
+                      );
+
+                      // Monta título explicativo para o bloqueio
+                      let rowTitle = "";
+                      if (activeSchedule) {
+                          const dateStr = (activeSchedule.date as any)?.toDate ? (activeSchedule.date as any).toDate().toLocaleDateString('pt-BR') : new Date(activeSchedule.date).toLocaleDateString('pt-BR');
+                          rowTitle = `Bloqueado: Agendado para ${dateStr} (ID: ${activeSchedule.id})`;
+                      } else if (isAlreadyInventoried) {
+                          rowTitle = "Já inventariado (Disponível para recontagem)";
+                      }
                       
                       return (
                       <TableRow 
@@ -1333,9 +1551,10 @@ export default function AssetInventoryPage() {
                             ? "bg-blue-50" 
                             : (activeSchedule 
                                 ? (isAssignedToMe ? "bg-orange-50 border-l-4 border-l-orange-500 hover:bg-orange-100" : "opacity-50 bg-gray-100 pointer-events-none") 
-                                : "")
+                                : ""
+                              )
                         }
-                        title={activeSchedule && !isAssignedToMe ? "Agendado para outro usuário" : ""}
+                        title={rowTitle}
                       >
                         <TableCell>
                           <Checkbox 
@@ -1370,54 +1589,130 @@ export default function AssetInventoryPage() {
                         </TableCell>
                         <TableCell>
                           {(() => {
-                            const result = lastInventory?.results?.find(r => r.assetId === asset.id);
-                            if (result?.verified) {
+                            if (lastInventory) {
                               return (
                                 <div className="flex flex-col">
                                   <span className="text-sm font-medium text-green-600 flex items-center gap-1">
                                     <CheckCircle2 className="w-3 h-3" /> Sim
                                   </span>
-                                  <span className="text-xs text-muted-foreground">
-                                    {lastInventory.approvedAt 
-                                      ? getDate(lastInventory.approvedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
-                                      : getDate(lastInventory.date).toLocaleDateString('pt-BR')}
-                                  </span>
+                                  {!lastInventory.approvedAt && (
+                                    <span className="text-xs text-muted-foreground">
+                                      {getDate(lastInventory.date).toLocaleDateString('pt-BR')}
+                                    </span>
+                                  )}
                                 </div>
                               );
                             }
-                            return <span className="text-sm text-muted-foreground">Não</span>;
+                            return <span className="text-sm text-muted-foreground">-</span>;
                           })()}
                         </TableCell>
-                        <TableCell className="text-sm text-muted-foreground max-w-[150px] truncate" title={lastInventory?.results?.find(r => r.assetId === asset.id)?.observations || ""}>
-                          {lastInventory?.results?.find(r => r.assetId === asset.id)?.observations || "-"}
+                        <TableCell className="text-sm text-muted-foreground">
+                          {activeSchedule ? (
+                             (() => {
+                               const requester = users.find(u => String(u.id) === String(activeSchedule.requesterId));
+                               return (
+                                 <div className="flex flex-col gap-1">
+                                   {isWaitingMyApproval && (
+                                     <Button size="sm" variant="default" className="h-6 text-[10px] bg-indigo-600 hover:bg-indigo-700 w-full" onClick={(e) => {
+                                       e.stopPropagation();
+                                       setReviewingSchedule(activeSchedule);
+                                     }}>
+                                       Validar
+                                     </Button>
+                                   )}
+                                   <span className="font-medium text-slate-700">{requester?.name || "-"}</span>
+                                   <span className="text-[10px] text-blue-500 font-medium">Solicitante (Pendente)</span>
+                                 </div>
+                               );
+                             })()
+                          ) : (
+                            <div className="flex flex-col">
+                              <span className="font-medium text-slate-700">{lastInventory?.approvedBy || "-"}</span>
+                              <div className="flex items-center gap-1 text-[10px] text-muted-foreground mt-1">
+                                <span className="text-green-600" title="Data da Contagem">
+                                  {lastInventory?.completedAt ? getDate(lastInventory.completedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : "-"}
+                                </span>
+                                <span className="text-slate-300">/</span>
+                                <span className="text-blue-600" title="Data da Aprovação">
+                                  {lastInventory?.approvedAt ? getDate(lastInventory.approvedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : "-"}
+                                </span>
+                              </div>
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell>
                           {activeSchedule ? (
-                            <div className="flex flex-col gap-1">
-                              {activeSchedule.userIds.map(uid => {
-                                const responsibleUser = users.find(u => String(u.id) === String(uid));
-                                return (
-                                  <span key={uid} className="text-sm text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 w-fit whitespace-nowrap">
-                                    {responsibleUser?.name || "Usuário..."}
-                                  </span>
-                                );
-                              })}
-                              <span className="text-sm text-muted-foreground mt-0.5">
-                                {(() => {
-                                    const d = (activeSchedule.date as any)?.toDate ? (activeSchedule.date as any).toDate() : new Date(activeSchedule.date);
-                                    return d.toLocaleDateString('pt-BR');
-                                })()}
-                              </span>
+                            <div className="flex items-start justify-between gap-2">
+                                <div className="flex flex-col gap-1">
+                                {activeSchedule.userIds.map(uid => {
+                                    const responsibleUser = users.find(u => String(u.id) === String(uid));
+                                    return (
+                                    <span key={uid} className="text-sm text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 w-fit whitespace-nowrap">
+                                        {responsibleUser?.name || "Usuário..."}
+                                    </span>
+                                    );
+                                })}
+                                <div className="flex flex-col mt-0.5 gap-0.5">
+                                    <span className="text-[10px] text-muted-foreground">
+                                        {(() => {
+                                            const d = activeSchedule.createdAt ? getDate(activeSchedule.createdAt) : getDate(activeSchedule.date);
+                                            return `Solicitado: ${d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })}`;
+                                        })()}
+                                    </span>
+                                    {activeSchedule.completedAt && (
+                                        <span className="text-[10px] text-green-600 font-medium">
+                                            Contado: {getDate(activeSchedule.completedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                                        </span>
+                                    )}
+                                </div>
+                                </div>
+                                <Button 
+                                    variant="ghost" 
+                                    size="icon" 
+                                    className="h-6 w-6 text-red-400 hover:text-red-600 hover:bg-red-50 pointer-events-auto"
+                                    title="Cancelar este agendamento para liberar o ativo"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleRemoveFromSchedule(activeSchedule.id, asset.id);
+                                    }}
+                                >
+                                    <Trash2 className="w-3 h-3" />
+                                </Button>
                             </div>
                           ) : (
-                            <span className="text-sm text-muted-foreground">-</span>
+                            lastInventory ? (
+                              <div className="flex flex-col gap-1">
+                                {lastInventory.userIds.map(uid => {
+                                  const responsibleUser = users.find(u => String(u.id) === String(uid));
+                                  return (
+                                    <span key={uid} className="text-sm text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded border border-slate-100 w-fit whitespace-nowrap">
+                                      {responsibleUser?.name || "Usuário..."}
+                                    </span>
+                                  );
+                                })}
+                                <div className="flex items-center gap-1 text-[10px] text-muted-foreground mt-0.5">
+                                  <span title="Data da Solicitação">
+                                    {lastInventory.createdAt 
+                                      ? getDate(lastInventory.createdAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+                                      : getDate(lastInventory.date).toLocaleDateString('pt-BR') + " (Agend.)"}
+                                  </span>
+                                  <span className="text-slate-300">/</span>
+                                  <span className="text-green-600" title="Data da Contagem">
+                                    {lastInventory.completedAt ? getDate(lastInventory.completedAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : "-"}
+                                  </span>
+                                </div>
+                              </div>
+                            ) : <span className="text-sm text-muted-foreground">-</span>
                           )}
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground max-w-[150px] truncate" title={lastInventory?.results?.find(r => r.assetId === asset.id)?.observations || ""}>
+                          {lastInventory?.results?.find(r => r.assetId === asset.id)?.observations || "-"}
                         </TableCell>
                       </TableRow>
                     )})}
                     {(!filteredAssets || filteredAssets.length === 0) && (
                       <TableRow>
-                        <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                        <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                           Nenhum ativo encontrado.
                         </TableCell>
                       </TableRow>

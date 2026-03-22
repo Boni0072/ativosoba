@@ -21,7 +21,7 @@ const formatCurrency = (value: number) =>
 
 const sendEmailNotification = (to: string, subject: string, body: string) => {
   const mailtoLink = `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-  window.open(mailtoLink, '_self');
+  window.location.href = mailtoLink;
   toast.info(`Abrindo cliente de e-mail para notificar ${to}`);
 };
 
@@ -54,7 +54,17 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [costCenters, setCostCenters] = useState<any[]>([]);
   const [viewProject, setViewProject] = useState<any | null>(null);
   const [pendingMovements, setPendingMovements] = useState<any[]>([]);
+  const [dbSchedules, setDbSchedules] = useState<any[]>([]); // Estado separado para dados reais
   
+  // Estado para forçar atualização quando os mocks mudam
+  const [mockUpdateTrigger, setMockUpdateTrigger] = useState(0);
+
+  useEffect(() => {
+    const handler = () => setMockUpdateTrigger(prev => prev + 1);
+    window.addEventListener("local-mock-update", handler);
+    return () => window.removeEventListener("local-mock-update", handler);
+  }, []);
+
   // Garante a leitura do ID independente do formato do objeto user
   const userId = (user as any)?.id || (user as any)?.openId || (user as any)?.uid || (user as any)?.sub;
 
@@ -111,47 +121,117 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
   const prevPendingInventoryApprovalIds = useRef<string[]>([]);
   const prevPendingMovementIds = useRef<string[]>([]);
+  const prevPendingScheduleIds = useRef<string[]>([]);
 
   useEffect(() => {
+    // Efeito 1: Apenas escuta o Banco de Dados Real
     if (!userId) return;
-
     const unsubscribe = onSnapshot(collection(db, "inventory_schedules"), (snapshot) => {
-      const schedules = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setDbSchedules(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsubscribe();
+  }, [userId]);
+
+  useEffect(() => {
+      // Efeito 2: Processa Mocks + Dados Reais (Roda sempre que Mocks mudam ou DB muda)
+      // --- MOCK INJECTION PARA O DASHBOARD ---
+      // Garante que o sino mostre a mesma contagem que a página de notificações
+      const processedMocks = JSON.parse(localStorage.getItem("mock_processed_schedules") || "[]");
+      const statusOverrides = JSON.parse(localStorage.getItem("mock_status_overrides") || "{}");
+
+      const mockSchedulesRaw = userId ? [
+        {
+          id: "mock-schedule-pending",
+          requesterId: userId,
+          assetIds: ["mock-asset-1", "mock-asset-2"],
+          userIds: [userId],
+          date: new Date().toISOString(),
+          notes: "Inventário Mensal (Simulação)",
+          status: 'pending',
+          createdAt: new Date().toISOString()
+        },
+        {
+          id: "mock-schedule-approval",
+          requesterId: userId,
+          assetIds: ["mock-asset-3"],
+          userIds: ["user-other"],
+          date: new Date().toISOString(),
+          notes: "Aguardando Aprovação do Gestor (Simulação)",
+          status: 'waiting_approval',
+          results: [{ assetId: "mock-asset-3", verified: true, newCostCenter: "CC-TEST" }],
+          createdAt: new Date().toISOString()
+        }
+      ] : [];
+
+      // Aplica filtros de estado (Aprovado/Rejeitado) aos mocks
+      const mockSchedules = mockSchedulesRaw.map(s => {
+          if (statusOverrides[s.id]) {
+              return { ...s, status: statusOverrides[s.id] };
+          }
+          return s;
+      }).filter((s: any) => !processedMocks.includes(s.id));
+
+      const schedules = [...dbSchedules, ...mockSchedules];
       
       const mySchedules = schedules.filter((s: any) =>
-        s.status === 'pending' && s.userIds && s.userIds.includes(userId)
+        s.status === 'pending' && s.userIds && s.userIds.map(String).includes(String(userId))
       );
       setMyPendingSchedules(mySchedules);
       setPendingInventoryCount(mySchedules.length);
 
+      // Lógica de Notificação para Novos Agendamentos (Execução)
+      const currentScheduleIds = mySchedules.map((s: any) => s.id);
+      const newSchedules = mySchedules.filter((s: any) => !prevPendingScheduleIds.current.includes(s.id));
+
+      // Removida restrição de email para garantir que o Toast apareça sempre
+      if (newSchedules.length > 0 && user) {
+           const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3");
+           audio.play().catch(e => console.log("Audio play failed", e));
+
+           const subject = `Novo Inventário Agendado: ${newSchedules.length} tarefa(s)`;
+           const body = `Olá ${user.name || 'Usuário'},\n\nVocê foi designado para realizar novos inventários.\n\nDetalhes:\n${newSchedules.map((s: any) => `- Data: ${s.date?.toDate ? s.date.toDate().toLocaleDateString('pt-BR') : new Date(s.date).toLocaleDateString('pt-BR')}`).join('\n')}\n\nAcesse o sistema para iniciar a contagem.`;
+
+           toast.info(subject, {
+             description: "Você tem novas contagens para realizar.",
+             duration: 8000,
+             action: {
+               label: "Notificar por E-mail",
+               onClick: () => user?.email && sendEmailNotification(user.email, subject, body)
+             }
+           });
+      }
+      prevPendingScheduleIds.current = currentScheduleIds;
+
       const myApprovals = schedules.filter((s: any) => 
-        s.status === 'waiting_approval' && (s.requesterId && String(s.requesterId) === String(userId)));
+        s.status === 'waiting_approval' && (
+          userRole === 'admin' || 
+          userRole === 'diretoria' ||
+          (s.requesterId && String(s.requesterId) === String(userId))
+        )
+      );
       setPendingInventoryApprovals(myApprovals);
 
       const currentApprovalIds = myApprovals.map(a => a.id);
       const newApprovals = myApprovals.filter(a => !prevPendingInventoryApprovalIds.current.includes(a.id));
 
-      if (newApprovals.length > 0 && user?.email) {
+      if (newApprovals.length > 0 && user) {
            const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3");
            audio.play().catch(e => console.log("Audio play failed", e));
 
            const subject = `Você tem ${newApprovals.length} nova(s) aprovação(ões) de inventário`;
-           const body = `Olá ${user.name},\n\nExistem novas solicitações de aprovação de inventário no sistema.\n\nDetalhes:\n${newApprovals.map(s => `- Inventário de ${s.date?.toDate().toLocaleDateString('pt-BR') || s.date} com ${s.assetIds.length} ativos.`).join('\n')}\n\nPor favor, acesse o sistema para revisar.\n\nLink: ${window.location.origin}/inventory`;
+           const body = `Olá ${user.name || 'Usuário'},\n\nExistem novas solicitações de aprovação de inventário no sistema.\n\nDetalhes:\n${newApprovals.map(s => `- Inventário de ${s.date?.toDate ? s.date.toDate().toLocaleDateString('pt-BR') : new Date(s.date).toLocaleDateString('pt-BR')} com ${s.assetIds.length} ativos.`).join('\n')}\n\nPor favor, acesse o sistema para revisar.\n\nLink: ${window.location.origin}/inventory`;
 
            toast.info(subject, {
              action: {
                label: "Notificar por E-mail",
-               onClick: () => sendEmailNotification(user.email, subject, body)
+               onClick: () => user?.email && sendEmailNotification(user.email, subject, body)
              }
            });
       }
 
       prevPendingInventoryApprovalIds.current = currentApprovalIds;
       setPendingInventoryApprovalCount(myApprovals.length);
-    });
-
-    return () => unsubscribe();
-  }, [userId, user]);
+  }, [dbSchedules, userId, user, mockUpdateTrigger]); // Recalcula quando DB ou Mock muda
 
   useEffect(() => {
     if (!userId || !costCenters.length || !user) return;
@@ -173,12 +253,12 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         const currentMovementIds = myPendingMovements.map(m => m.id);
         const newMovements = myPendingMovements.filter(m => !prevPendingMovementIds.current.includes(m.id));
 
-        if (newMovements.length > 0 && user?.email) {
+        if (newMovements.length > 0 && user) {
             const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3");
             audio.play().catch(e => console.log("Audio play failed", e));
 
             const subject = `Você tem ${newMovements.length} nova(s) aprovação(ões) de movimentação de ativo`;
-            const body = `Olá ${user.name},\n\nExistem novas solicitações de aprovação de movimentação de ativos no sistema.\n\nDetalhes:\n${newMovements.map(m => `- Ativo: ${m.assetName} (${m.assetNumber}) para o CC ${m.destinationCostCenter}.`).join('\n')}\n\nPor favor, acesse o sistema para revisar.\n\nLink: ${window.location.origin}/asset-movements`;
+            const body = `Olá ${user.name || 'Usuário'},\n\nExistem novas solicitações de aprovação de movimentação de ativos no sistema.\n\nDetalhes:\n${newMovements.map(m => `- Ativo: ${m.assetName} (${m.assetNumber}) para o CC ${m.destinationCostCenter}.`).join('\n')}\n\nPor favor, acesse o sistema para revisar.\n\nLink: ${window.location.origin}/asset-movements`;
 
             toast.info(subject, {
               action: {
@@ -258,11 +338,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     { id: 'dashboard', label: 'Dashboard', icon: Home, path: '/dashboard' },
     { id: 'projects', label: 'Obras', icon: FileText, path: '/projects' },
     { id: 'budgets', label: 'Budgets', icon: DollarSign, path: '/budgets' },
-    { id: 'assets', label: 'Imobilizado', icon: Package, path: '/assets' },
-    { id: 'asset-movements', label: 'Movimentações', icon: ArrowRightLeft, path: '/asset-movements' },
+    { id: 'assets', label: 'Cadastro de Ativos', icon: Package, path: '/assets' },
+    { id: 'asset-movements', label: 'Movimentações', icon: ArrowRightLeft, path: '/asset-movements', notificationCount: pendingMovements.length },
     { id: 'asset-depreciation', label: 'Depreciação', icon: TrendingDown, path: '/asset-depreciation' },
-    { id: 'inventory', label: 'Inventário de Ativos', icon: ClipboardList, path: '/inventory' },
-    { id: 'notifications', label: 'Notificações', icon: Bell, path: '/notifications', notificationCount: totalNotifications },
+    { id: 'inventory', label: 'Inventário de Ativos', icon: ClipboardList, path: '/inventory', notificationCount: pendingInventoryCount + pendingInventoryApprovalCount },
     { id: 'reports', label: 'Relatórios', icon: BarChart3, path: '/reports' },
     { id: 'accounting', label: 'Estrutura Contábil', icon: Landmark, path: '/accounting' },
     { id: 'users', label: 'Usuários', icon: Users, path: '/users' },
@@ -279,7 +358,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     if (!allowedPages || !Array.isArray(allowedPages)) return false;
 
     // Permite acesso apenas se a página estiver na lista de permissões.
-    return allowedPages.includes(item.id) || item.id === 'dashboard' || item.id === 'notifications';
+    return allowedPages.includes(item.id) || item.id === 'dashboard';
   });
 
   const steps = [

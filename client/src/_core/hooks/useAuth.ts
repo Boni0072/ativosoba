@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { auth } from "@/lib/firebase";
 import { onAuthStateChanged, signOut, GoogleAuthProvider, signInWithPopup } from "firebase/auth";
+import { toast } from "sonner";
+import { playSuccessSound, playErrorSound } from "@/lib/utils";
 
 export function useAuth() {
   const [user, setUser] = useState<any | null>(null);
@@ -45,7 +47,13 @@ export function useAuth() {
       localStorage.removeItem("obras_user");
       localStorage.removeItem("obras_token");
       setUser(null);
-      window.location.href = "/login"; // Redirecionamento forçado para garantir limpeza de estado
+      
+      playSuccessSound();
+      toast.success("Sessão encerrada com sucesso");
+      
+      setTimeout(() => {
+        window.location.href = "/login"; // Redirecionamento forçado para garantir limpeza de estado
+      }, 1000);
     } catch (error) {
       console.error("Erro ao sair:", error);
     }
@@ -55,8 +63,12 @@ export function useAuth() {
     const provider = new GoogleAuthProvider();
     try {
       await signInWithPopup(auth, provider);
+      playSuccessSound();
+      toast.success("Login realizado com sucesso");
     } catch (error) {
       console.error("Erro no login com Google:", error);
+      playErrorSound();
+      toast.error("Falha ao realizar login", { description: "Tente novamente." });
       throw error;
     }
   };

@@ -497,12 +497,33 @@ function ExpenseRow({ expense, accountingAccounts, assets, onSave, onOpenCreateA
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [viewItemsOpen, setViewItemsOpen] = useState(false);
+  const [attachmentBase64, setAttachmentBase64] = useState<string | null>(expense.attachmentBase64 || null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const val = (expense.assetId !== null && expense.assetId !== undefined) ? String(expense.assetId) : "";
     const cleanVal = (val === "NaN" || val === "nan") ? "" : val;
     setAssetId(cleanVal);
   }, [expense.assetId]);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.type !== "application/pdf") {
+        toast.error("Apenas arquivos PDF são permitidos.");
+        return;
+      }
+      
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const base64 = event.target?.result as string;
+        setAttachmentBase64(base64);
+        setIsDirty(true);
+        toast.success("PDF anexado. Clique em Gravar para salvar.");
+      };
+      reader.readAsDataURL(file);
+    }
+  };
 
   const handleSave = async () => {
     try {
@@ -527,6 +548,7 @@ function ExpenseRow({ expense, accountingAccounts, assets, onSave, onOpenCreateA
         date: expense.date, // Mantém o formato original (Timestamp ou string) para o updateDoc processar ou converter se necessário
         category: expense.category || "",
         notes: expense.notes || "",
+        attachmentBase64: attachmentBase64,
       };
 
       if (type === 'opex' && accountingAccount) {
@@ -561,6 +583,55 @@ function ExpenseRow({ expense, accountingAccounts, assets, onSave, onOpenCreateA
             <Eye size={14} className="text-blue-600" />
           </Button>
         ) : "-"}
+      </td>
+      <td className="border border-slate-300 px-3 py-2 text-center">
+        <div className="flex items-center justify-center gap-2">
+          <input 
+            type="file" 
+            accept="application/pdf" 
+            className="hidden" 
+            ref={fileInputRef} 
+            onChange={handleFileChange}
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 w-6 p-0"
+            onClick={() => fileInputRef.current?.click()}
+            title={attachmentBase64 ? "Substituir PDF" : "Anexar PDF"}
+          >
+            <Upload size={14} className="text-slate-600" />
+          </Button>
+          {attachmentBase64 ? (
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 w-6 p-0 text-blue-600 hover:text-blue-800"
+                onClick={() => {
+                  const win = window.open();
+                  if (win) {
+                    win.document.write(`<iframe src="${attachmentBase64}" frameborder="0" style="border:0; top:0px; left:0px; bottom:0px; right:0px; width:100%; height:100%;" allowfullscreen></iframe>`);
+                    win.document.title = "Visualizar Anexo";
+                  }
+                }}
+                title="Visualizar Anexo"
+              >
+                <Eye size={14} />
+              </Button>
+            <a 
+              href={attachmentBase64} 
+              download={`anexo-${expense.description || 'despesa'}.pdf`}
+              className="flex items-center justify-center h-6 w-6 text-red-600 hover:text-red-800"
+              title="Baixar Anexo"
+            >
+              <FileText size={14} />
+            </a>
+            </>
+          ) : (
+            <span className="text-xs text-slate-400">-</span>
+          )}
+        </div>
       </td>
       <td className="border border-slate-300 px-3 py-2">
         {type === 'opex' ? (
@@ -1570,19 +1641,23 @@ export default function BudgetsPage() {
         />
         <Dialog open={openExpenseDialog} onOpenChange={handleOpenExpenseDialog}>
           <DialogTrigger asChild>
-            <Button className="gap-2">
+            <Button className="gap-2 bg-blue-600 hover:bg-blue-700 text-white shadow-sm h-10 px-6">
               <Plus size={20} />
               Nova Despesa
             </Button>
           </DialogTrigger>
           <DialogContent className="sm:max-w-[600px] flex flex-col max-h-[90vh]">
-            <DialogHeader>
-              <DialogTitle>Registrar Nova Despesa</DialogTitle>
-              <DialogDescription>
-                Insira os detalhes da nova despesa. Para despesas Capex, selecione o ativo correspondente.
-              </DialogDescription>
+            <DialogHeader className="flex flex-row items-start justify-between border-b pb-4 space-y-0 gap-4">
+              <div className="flex flex-col gap-1">
+                <DialogTitle>Registrar Nova Despesa</DialogTitle>
+                <DialogDescription>Insira os detalhes da nova despesa.</DialogDescription>
+              </div>
+              <Button type="submit" form="budget-expense-form" className="bg-green-600 hover:bg-green-700 text-white font-bold shadow-md shrink-0" disabled={isExpenseBlocked}>
+                <Check className="mr-2 h-4 w-4" />
+                Registrar
+              </Button>
             </DialogHeader>
-            <form onSubmit={handleExpenseSubmit} className="flex flex-col flex-1 overflow-hidden">
+            <form id="budget-expense-form" onSubmit={handleExpenseSubmit} className="flex flex-col flex-1 overflow-hidden">
               <div className="overflow-y-auto p-4 -mx-4 space-y-4 flex-1">
                 <div className="space-y-2 p-4 border rounded-lg bg-slate-50">
                   <label className="text-sm font-medium">Importar da NF-e (Opcional)</label>
@@ -1842,11 +1917,6 @@ export default function BudgetsPage() {
                   </div>
                 </div>
               </div>
-              <DialogFooter className="pt-4">
-                <Button type="submit" className="w-full" disabled={isExpenseBlocked}>
-                  Registrar Despesa
-                </Button>
-              </DialogFooter>
             </form>
           </DialogContent>
         </Dialog>

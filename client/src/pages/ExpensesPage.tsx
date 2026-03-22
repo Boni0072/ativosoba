@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Loader2, Pencil, Plus, Trash2, AlertTriangle, FileText, X } from "lucide-react";
+import { Loader2, Pencil, Plus, Trash2, AlertTriangle, FileText, X, Check } from "lucide-react";
 import { toast } from "sonner";
 
 export default function ExpensesPage() {
@@ -305,16 +305,20 @@ export default function ExpensesPage() {
         <h1 className="text-3xl font-bold text-slate-700">Despesas</h1>
         <Dialog open={open} onOpenChange={handleOpenChange}>
           <DialogTrigger asChild>
-            <Button className="gap-2">
+            <Button className="gap-2 bg-blue-600 hover:bg-blue-700 text-white shadow-sm h-10 px-6">
               <Plus size={20} />
               Nova Despesa
             </Button>
           </DialogTrigger>
           <DialogContent className="sm:max-w-[600px] flex flex-col max-h-[90vh]">
-            <DialogHeader>
+            <DialogHeader className="flex flex-row items-center justify-between border-b pb-4 space-y-0">
               <DialogTitle>{editingId ? "Editar Despesa" : "Registrar Nova Despesa"}</DialogTitle>
+              <Button type="submit" form="expense-form" className="bg-green-600 hover:bg-green-700 text-white font-bold shadow-md" disabled={(isBlocked && !editingId)}>
+                <Check className="mr-2 h-4 w-4" />
+                {editingId ? "Atualizar" : "Registrar"}
+              </Button>
             </DialogHeader>
-            <form onSubmit={handleSubmit} className="flex flex-col flex-1 overflow-hidden">
+            <form id="expense-form" onSubmit={handleSubmit} className="flex flex-col flex-1 overflow-hidden">
             <div className="overflow-y-auto p-4 -mx-4 space-y-4 flex-1"> {/* Added scrollable div */}
               <div className="space-y-2 p-4 border rounded-lg bg-slate-50">
                 <label className="text-sm font-medium">Importar da NF-e (Opcional)</label>
@@ -562,11 +566,6 @@ export default function ExpensesPage() {
                 </div>
               </div>
             </div>
-            <DialogFooter className="pt-4">
-              <Button type="submit" className="w-full" disabled={(isBlocked && !editingId)}>
-                {editingId ? "Atualizar Despesa" : "Registrar Despesa"}
-              </Button>
-            </DialogFooter>
             </form>
           </DialogContent>
         </Dialog>

@@ -22,6 +22,7 @@ export default function NotificationsPage() {
 
   const [projects, setProjects] = useState<any[]>([]);
   const [schedules, setSchedules] = useState<any[]>([]);
+  const [dbSchedules, setDbSchedules] = useState<any[]>([]); // Estado separado
   const [movements, setMovements] = useState<any[]>([]);
   const [costCenters, setCostCenters] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
@@ -31,10 +32,24 @@ export default function NotificationsPage() {
   const [rejectionReason, setRejectionReason] = useState("");
   const [showEmailModal, setShowEmailModal] = useState(false);
 
+  // Estado para forçar atualização quando os mocks mudam
+  const [mockUpdateTrigger, setMockUpdateTrigger] = useState(0);
+
+  useEffect(() => {
+    const handler = () => setMockUpdateTrigger(prev => prev + 1);
+    window.addEventListener("local-mock-update", handler);
+    return () => window.removeEventListener("local-mock-update", handler);
+  }, []);
+
   // Data fetching
   useEffect(() => {
     const unsubProjects = onSnapshot(collection(db, "projects"), (snapshot) => setProjects(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
-    const unsubSchedules = onSnapshot(collection(db, "inventory_schedules"), (snapshot) => setSchedules(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
+    
+    // Busca apenas dados reais do banco
+    const unsubSchedules = onSnapshot(collection(db, "inventory_schedules"), (snapshot) => {
+      setDbSchedules(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+
     const unsubMovements = onSnapshot(collection(db, "asset_movements"), (snapshot) => setMovements(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
     const unsubCostCenters = onSnapshot(collection(db, "cost_centers"), (snapshot) => setCostCenters(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
     const unsubUsers = onSnapshot(collection(db, "users"), (snapshot) => setUsers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))));
@@ -49,7 +64,51 @@ export default function NotificationsPage() {
       unsubUsers();
       clearTimeout(timer);
     };
-  }, []);
+  }, []); // Remove dependências instáveis daqui
+
+  // Efeito dedicado para combinar DB + Mocks
+  useEffect(() => {
+      // Garante que o usuário veja notificações mesmo sem dados no banco (Modo Demo/Frontend-Only)
+      const currentUserId = (user as any)?.id || (user as any)?.openId || (user as any)?.uid || (user as any)?.sub;
+      
+      // LÊ O ESTADO DOS MOCKS DO LOCALSTORAGE
+      const processedMocks = JSON.parse(localStorage.getItem("mock_processed_schedules") || "[]");
+      const statusOverrides = JSON.parse(localStorage.getItem("mock_status_overrides") || "{}");
+
+      const mockSchedulesRaw = currentUserId ? [
+        {
+          id: "mock-schedule-pending",
+          requesterId: currentUserId,
+          assetIds: ["mock-asset-1", "mock-asset-2"],
+          userIds: [currentUserId],
+          date: new Date().toISOString(),
+          notes: "Inventário Mensal (Simulação)",
+          status: 'pending',
+          createdAt: new Date().toISOString()
+        },
+        {
+          id: "mock-schedule-approval",
+          requesterId: currentUserId,
+          assetIds: ["mock-asset-3"],
+          userIds: ["user-other"],
+          date: new Date().toISOString(),
+          notes: "Aguardando Aprovação do Gestor (Simulação)",
+          status: 'waiting_approval',
+          results: [{ assetId: "mock-asset-3", verified: true, newCostCenter: "CC-TEST" }],
+          createdAt: new Date().toISOString()
+        }
+      ] : [];
+
+      // APLICA FILTROS E STATUS ATUALIZADOS
+      const mockSchedules = mockSchedulesRaw.map(s => {
+          if (statusOverrides[s.id]) {
+              return { ...s, status: statusOverrides[s.id] };
+          }
+          return s;
+      }).filter(s => !processedMocks.includes(s.id));
+
+      setSchedules([...dbSchedules, ...mockSchedules]);
+  }, [dbSchedules, user, mockUpdateTrigger]); // Recalcula sempre que DB ou Mock mudar
 
   // Memoized pending items
   const userId = (user as any)?.id || (user as any)?.openId || (user as any)?.uid || (user as any)?.sub;
@@ -77,12 +136,13 @@ export default function NotificationsPage() {
   }, [projects, user, userRole]);
 
   const myPendingSchedules = useMemo(() => schedules.filter(s => 
-    s.status === 'pending' && userId && s.userIds.some((uid: string) => String(uid) === String(userId))
+    s.status === 'pending' && userId && s.userIds && s.userIds.map(String).includes(String(userId))
   ), [schedules, userId]);
 
   const pendingInventoryApprovals = useMemo(() => schedules.filter(s => 
     s.status === 'waiting_approval' && (
       userRole === 'admin' || 
+      userRole === 'diretoria' ||
       (s.requesterId && String(s.requesterId) === String(userId))
     )
   ), [schedules, userId, userRole]);
@@ -122,12 +182,12 @@ export default function NotificationsPage() {
     const findUserByEmail = (email: string) => users.find(u => u.email === email);
 
     const addToGroup = (userKey: string, userObject: { name: string, email: string } | undefined, task: any) => {
-        if (!userKey || !userObject) return;
+        if (!userKey || !userObject || !userObject.name) return;
 
         if (!groups[userKey]) {
             groups[userKey] = {
                 userName: userObject.name,
-                userEmail: userObject.email,
+                userEmail: userObject.email || '',
                 tasks: []
             };
         }
@@ -192,7 +252,7 @@ export default function NotificationsPage() {
       inventory_approval: "APROVAÇÕES DE INVENTÁRIO",
     };
 
-    let corpoEmail = `Olá ${userGroup.userName},\n\nExistem ${userGroup.tasks.length} pendências no Sistema de Gestão de Obras aguardando sua ação:\n\n`;
+    let corpoEmail = `Olá ${userGroup.userName},\n\nIdentificamos ${userGroup.tasks.length} pendências no Sistema de Gestão de Obras aguardando sua regularização:\n\n`;
     Object.entries(taskHeaders).forEach(([type, header]) => {
       const tasks = userGroup.tasks.filter((t: any) => t.type === type);
       if (tasks.length > 0) {
@@ -202,8 +262,8 @@ export default function NotificationsPage() {
       }
     });
 
-    corpoEmail += `\nPor favor, acesse o sistema para revisar.\n\nLink: ${window.location.origin}/notifications\n\nAtenciosamente,\nSistema de Gestão de Obras`;
-    const subject = encodeURIComponent(`Alerta de Pendências - ${userGroup.tasks.length} item(ns)`);
+    corpoEmail += `\nSolicitamos a gentileza de acessar o sistema para realizar as tratativas necessárias.\n\nLink: ${window.location.origin}/notifications\n\nAtenciosamente,\nGestão de Ativos`;
+    const subject = encodeURIComponent(`Cobrança de Pendências - ${userGroup.tasks.length} item(ns)`);
     const body = encodeURIComponent(corpoEmail);
     window.location.href = `mailto:${recipient}?subject=${subject}&body=${body}`;
   };
@@ -283,7 +343,7 @@ export default function NotificationsPage() {
         </div>
         {(userRole === 'admin' || userRole === 'diretoria') && (
           <Button onClick={() => setShowEmailModal(true)}>
-            <Send className="mr-2 h-4 w-4" /> Notificar Responsáveis
+            <Mail className="mr-2 h-4 w-4" /> Enviar Cobrança
           </Button>
         )}
       </div>
@@ -391,7 +451,7 @@ export default function NotificationsPage() {
                   <p className="text-base font-medium text-slate-700">Realizado em: {new Date(schedule.date).toLocaleDateString('pt-BR')}</p>
                   <p className="text-sm text-slate-500">{schedule.results?.length || 0} ativos verificados</p>
                 </div>
-                <Button size="sm" className="bg-purple-600 hover:bg-purple-700 text-white" onClick={() => setLocation('/inventory')}>
+                <Button size="sm" className="bg-purple-600 hover:bg-purple-700 text-white" onClick={() => setLocation(`/inventory?schedule=${schedule.id}`)}>
                   <Eye className="w-4 h-4 mr-2" /> Verificar na Página
                 </Button>
               </div>
@@ -450,7 +510,7 @@ export default function NotificationsPage() {
         <DialogContent className="max-w-4xl max-h-[80vh] flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Mailbox className="h-6 w-6 text-slate-700" />
+              <Mail className="h-6 w-6 text-slate-700" />
               Central de Notificação por E-mail
             </DialogTitle>
             <DialogDescription>
@@ -487,7 +547,7 @@ export default function NotificationsPage() {
                       title={group.userEmail ? `Enviar para ${group.userEmail}` : 'Abrir rascunho (sem e-mail cadastrado)'}
                     >
                       <Mail className="w-4 h-4" />
-                      Enviar E-mail
+                      Enviar Cobrança
                     </Button>
                   </Card>
                 ))}
