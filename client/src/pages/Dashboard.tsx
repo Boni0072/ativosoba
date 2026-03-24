@@ -531,11 +531,20 @@ export default function Dashboard() {
     movements.forEach(m => {
       let val = Number(m.value || 0);
 
-      if (val === 0 && m.assetId && assets.length > 0) {
-        const asset = assets.find(a => a.id === m.assetId);
-        if (asset) {
-            const assetExpenses = expenses.filter(e => String(e.assetId) === String(asset.id));
-            val = assetExpenses.reduce((acc, curr) => acc + Number(curr.amount), Number(asset.value || 0));
+      if (val === 0 && assets.length > 0) {
+        if (m.isBatch && m.assets) {
+            // Sum value of all assets in batch
+            val = m.assets.reduce((sum: number, item: any) => {
+                const asset = assets.find(a => a.id === item.assetId);
+                if (!asset) return sum;
+                return sum + getAssetValue(asset, expenses);
+            }, 0);
+        } else if (m.assetId) {
+            const asset = assets.find(a => a.id === m.assetId);
+            if (asset) {
+                const assetExpenses = expenses.filter(e => String(e.assetId) === String(asset.id));
+                val = assetExpenses.reduce((acc, curr) => acc + Number(curr.amount), Number(asset.value || 0));
+            }
         }
       }
 
@@ -1620,8 +1629,8 @@ export default function Dashboard() {
                                         <TableRow key={m.id}>
                                             <TableCell>{parseDate(m.date).toLocaleDateString('pt-BR')}</TableCell>
                                             <TableCell>
-                                                <div className="font-medium">{m.assetName}</div>
-                                                <div className="text-xs text-muted-foreground">{m.assetNumber}</div>
+                                                <div className="font-medium">{m.isBatch ? `${m.assets?.length || 0} Ativos (Lote)` : m.assetName}</div>
+                                                <div className="text-xs text-muted-foreground">{m.isBatch ? "-" : m.assetNumber}</div>
                                             </TableCell>
                                             <TableCell>{MOVEMENT_TYPES.find(t => t.value === m.type)?.label || m.type}</TableCell>
                                             <TableCell>{origin}</TableCell>

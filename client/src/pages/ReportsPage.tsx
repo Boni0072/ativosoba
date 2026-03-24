@@ -5,7 +5,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Calendar as CalendarIcon, CheckCircle2, FileText, User, Download, ChevronDown, ChevronRight, History, TrendingDown } from "lucide-react";
+import { Calendar as CalendarIcon, CheckCircle2, FileText, User, Download, ChevronDown, ChevronRight, History, TrendingDown, ArrowRightLeft, ClipboardList } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
 import { jsPDF } from "jspdf";
@@ -16,6 +16,7 @@ interface InventoryResult {
   assetId: string;
   newCostCenter: string;
   verified: boolean;
+  observations?: string;
 }
 
 interface InventorySchedule {
@@ -30,6 +31,7 @@ interface InventorySchedule {
   results?: InventoryResult[];
   approvedBy?: string;
   approvedAt?: string;
+  completedAt?: string;
   createdAt?: string;
 }
 
@@ -102,6 +104,9 @@ export default function ReportsPage() {
   const [depreciationType, setDepreciationType] = useState<'fiscal' | 'corporate'>('fiscal');
   const [assets, setAssets] = useState<any[]>([]);
   const [assetClasses, setAssetClasses] = useState<any[]>([]);
+  const [movements, setMovements] = useState<any[]>([]);
+  const [projects, setProjects] = useState<any[]>([]);
+  const [costCenters, setCostCenters] = useState<any[]>([]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "inventory_schedules"), (snapshot) => {
@@ -151,6 +156,28 @@ export default function ReportsPage() {
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    const q = query(collection(db, "asset_movements"), orderBy("date", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setMovements(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "projects"), (snapshot) => {
+      setProjects(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "cost_centers"), (snapshot) => {
+      setCostCenters(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsubscribe();
+  }, []);
+
   const assetsByDate = useMemo(() => {
     if (!assets) return {};
     const groups: Record<string, any[]> = {};
@@ -175,6 +202,65 @@ export default function ReportsPage() {
   // Garante a leitura do ID independente do formato do objeto user
   const currentUserId = (user as any)?.id || (user as any)?.openId || (user as any)?.uid || (user as any)?.sub;
   const userRole = (user as any)?.role;
+
+  // Helper functions for names
+  const getProjectName = (id: string) => projects.find(p => String(p.id) === String(id))?.name || "—";
+  const getCostCenterName = (code: string) => {
+      const cc = costCenters.find((c: any) => c.code === code);
+      return cc ? `${cc.code} - ${cc.name}` : code || "—";
+  };
+
+  const handleExportMovements = () => {
+      if (!movements || movements.length === 0) {
+        toast.error("Não há movimentações para exportar.");
+        return;
+      }
+
+      const data = movements.flatMap(m => {
+        const origin = m.originProjectId ? `Obra: ${getProjectName(m.originProjectId)}` : 
+                       m.originCostCenter ? `CC: ${getCostCenterName(m.originCostCenter)}` : "-";
+        
+        let destination = "-";
+        if (m.type === "transfer_project") destination = `Obra: ${getProjectName(m.destinationProjectId)}`;
+        else if (m.type === "transfer_cost_center") destination = `CC: ${getCostCenterName(m.destinationCostCenter)}`;
+        else if (m.movementCategory === "write_off") destination = "Baixado";
+        else if (m.movementCategory === "partial_write_off") destination = "Baixa Parcial";
+
+        const baseData = {
+          "Data": new Date(m.date).toLocaleDateString('pt-BR'),
+          "Tipo": m.type,
+          "Origem": origin,
+          "Destino": destination,
+          "Solicitante": m.performedBy || "-",
+          "Aprovador": m.approvedBy || (m.rejectedBy ? `Rejeitado por ${m.rejectedBy}` : "-"),
+          "Data Aprovação": m.approvedAt ? new Date(m.approvedAt).toLocaleString('pt-BR') : (m.rejectedAt ? new Date(m.rejectedAt).toLocaleString('pt-BR') : "-"),
+          "Status": m.status === 'completed' ? 'Concluído' : m.status === 'pending_approval' ? 'Pendente' : m.status === 'rejected' ? 'Rejeitado' : m.status
+        };
+
+        if (m.isBatch && m.assets && m.assets.length > 0) {
+            return m.assets.map((asset: any) => ({
+                ...baseData,
+                "Ativo": asset.assetName,
+                "Nº Ativo": asset.assetNumber
+            }));
+        }
+        return [{
+            ...baseData,
+            "Ativo": m.assetName,
+            "Nº Ativo": m.assetNumber
+        }];
+      });
+
+      const ws = XLSX.utils.json_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Movimentações");
+      
+      // Adjust column widths
+      ws['!cols'] = [{ wch: 12 }, { wch: 30 }, { wch: 15 }, { wch: 25 }, { wch: 25 }, { wch: 25 }, { wch: 20 }, { wch: 15 }];
+      
+      XLSX.writeFile(wb, `relatorio_movimentacoes_${new Date().toISOString().split('T')[0]}.xlsx`);
+      toast.success("Relatório de movimentações exportado!");
+  };
 
   const handleApproveInventory = async (schedule: InventorySchedule) => {
     if (!schedule.results) return;
@@ -428,7 +514,7 @@ export default function ReportsPage() {
         if (scheduleForMetadata.costCenterCodes && scheduleForMetadata.costCenterCodes.length > 0) {
              doc.text(`Centros de Custo: ${scheduleForMetadata.costCenterCodes.join(', ')}`, pageWidth - 14, 29, { align: 'right' });
         } else {
-             const responsibles = scheduleForMetadata.userIds.map(uid => users.find(u => u.id === uid)?.name).filter(Boolean).join(", ");
+             const responsibles = (scheduleForMetadata.userIds || []).map(uid => users.find(u => u.id === uid)?.name).filter(Boolean).join(", ");
              doc.text(`Responsáveis: ${responsibles}`, pageWidth - 14, 29, { align: 'right' });
         }
         
@@ -539,7 +625,7 @@ export default function ReportsPage() {
       </h1>
 
       <Tabs defaultValue="status-history" className="w-full">
-        <TabsList className="grid w-full grid-cols-3 h-auto p-1 gap-1">
+        <TabsList className="grid w-full grid-cols-5 h-auto p-1 gap-1">
           <TabsTrigger 
             value="status-history" 
             className="data-[state=active]:bg-blue-600 data-[state=active]:text-white text-slate-600 text-[144%] py-1 font-bold transition-all border border-blue-600 shadow-md rounded-md"
@@ -557,6 +643,18 @@ export default function ReportsPage() {
             className="data-[state=active]:bg-orange-600 data-[state=active]:text-white text-slate-600 text-[144%] py-1 font-bold transition-all border border-orange-600 shadow-md rounded-md"
           >
             Histórico Inventários
+          </TabsTrigger>
+          <TabsTrigger 
+            value="movements" 
+            className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-600 text-[144%] py-1 font-bold transition-all border border-cyan-600 shadow-md rounded-md"
+          >
+            Movimentações
+          </TabsTrigger>
+          <TabsTrigger 
+            value="inventory-report" 
+            className="data-[state=active]:bg-purple-600 data-[state=active]:text-white text-slate-600 text-[144%] py-1 font-bold transition-all border border-purple-600 shadow-md rounded-md"
+          >
+            Relatório Inventários
           </TabsTrigger>
         </TabsList>
 
@@ -838,7 +936,7 @@ export default function ReportsPage() {
                       <p><strong>{schedule.assetIds.length}</strong> ativos verificados.</p>
                       <div className="flex items-center gap-1 mt-1 text-base text-slate-500">
                         <User className="h-4 w-4" />
-                        Responsáveis: {schedule.userIds.map(uid => users?.find(u => u.id === uid)?.name).filter(Boolean).join(", ") || "N/A"}
+                        Responsáveis: {(schedule.userIds || []).map(uid => users?.find(u => u.id === uid)?.name).filter(Boolean).join(", ") || "N/A"}
                       </div>
                     </div>
                   </div>
@@ -910,7 +1008,7 @@ export default function ReportsPage() {
                                       <div className="flex items-center gap-2 text-slate-600">
                                         <User className="w-5 h-5" />
                                         <span className="font-medium">Responsáveis:</span>
-                                        {schedule.userIds.map(uid => users?.find(u => u.id === uid)?.name).filter(Boolean).join(", ")}
+                                        {(schedule.userIds || []).map(uid => users?.find(u => u.id === uid)?.name).filter(Boolean).join(", ")}
                                       </div>
                                     </div>
                                     <Button variant="outline" size="sm" onClick={() => handleExportReport(schedule)} className="h-8 text-sm bg-white border-slate-300 hover:bg-slate-50 text-slate-700">
@@ -957,6 +1055,249 @@ export default function ReportsPage() {
         </CardContent>
       </Card>
       </div>
+      </TabsContent>
+
+      {/* Seção de Relatório de Movimentações */}
+      <TabsContent value="movements">
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-slate-700 text-xl">
+              <ArrowRightLeft className="h-6 w-6" />
+              Relatório de Movimentações
+            </CardTitle>
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={handleExportMovements} className="bg-green-600 hover:bg-green-700 text-white">
+                <Download className="h-4 w-4 mr-2" />
+                Exportar Excel
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="rounded-md border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Data</TableHead>
+                  <TableHead>Ativo</TableHead>
+                  <TableHead>Tipo</TableHead>
+                  <TableHead>Origem</TableHead>
+                  <TableHead>Destino</TableHead>
+                  <TableHead>Solicitante</TableHead>
+                  <TableHead>Aprovador</TableHead>
+                  <TableHead>Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {movements.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                      Nenhuma movimentação registrada.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  movements.flatMap((m) => {
+                    if (m.isBatch && m.assets && m.assets.length > 0) {
+                        return m.assets.map((asset: any, idx: number) => ({ ...m, ...asset, uniqueKey: `${m.id}_${idx}` }));
+                    }
+                    return [{ ...m, uniqueKey: m.id }];
+                  }).map((m) => {
+                    const origin = m.originProjectId ? `Obra: ${getProjectName(m.originProjectId)}` : 
+                                   m.originCostCenter ? `CC: ${getCostCenterName(m.originCostCenter)}` : "-";
+                    
+                    let destination = "-";
+                    if (m.type === "transfer_project") destination = `Obra: ${getProjectName(m.destinationProjectId)}`;
+                    else if (m.type === "transfer_cost_center") destination = `CC: ${getCostCenterName(m.destinationCostCenter)}`;
+                    else if (m.movementCategory === "write_off") destination = "Baixado";
+                    else if (m.movementCategory === "partial_write_off") destination = "Baixa Parcial";
+
+                    return (
+                    <TableRow key={m.uniqueKey}>
+                      <TableCell>{new Date(m.date).toLocaleDateString('pt-BR')}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-col">
+                          <span className="font-medium">{m.assetName}</span>
+                          <span className="text-xs text-muted-foreground">{m.assetNumber}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800 capitalize">
+                          {m.type?.replace(/_/g, ' ') || '-'}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-sm">{origin}</TableCell>
+                      <TableCell className="text-sm">{destination}</TableCell>
+                      <TableCell>{m.performedBy || "-"}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-col">
+                          <span className="font-medium text-sm">{m.approvedBy || (m.rejectedBy ? m.rejectedBy : "-")}</span>
+                          {(m.approvedAt || m.rejectedAt) && (
+                            <span className="text-[10px] text-slate-500">{new Date(m.approvedAt || m.rejectedAt).toLocaleString('pt-BR')}</span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                            m.status === 'completed' ? 'bg-green-100 text-green-800' : 
+                            m.status === 'pending_approval' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                        } capitalize`}>
+                          {m.status === 'completed' ? 'Concluído' : m.status === 'pending_approval' ? 'Pendente' : m.status === 'rejected' ? 'Rejeitado' : m.status}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  )})
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+      </TabsContent>
+
+      {/* Seção de Relatório Detalhado de Inventários */}
+      <TabsContent value="inventory-report">
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-slate-700 text-xl">
+              <ClipboardList className="h-6 w-6" />
+              Relatório Detalhado de Inventários
+            </CardTitle>
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={() => {
+                  const itemsToExport = completedSchedules.flatMap(schedule => {
+                    const items = schedule.results || (schedule.assetIds ? schedule.assetIds.map(id => ({ assetId: id, verified: false, newCostCenter: '' })) : []);
+                    return items.map(item => {
+                      const asset = assets.find(a => a.id === item.assetId);
+                      const currentCC = typeof asset?.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset?.costCenter;
+                      const responsibles = schedule.userIds.map(uid => users.find(u => u.id === uid)?.name).filter(Boolean).join(", ");
+                      const requester = users.find(u => String(u.id) === String(schedule.requesterId))?.name || "-";
+
+                      return {
+                        "Data": new Date(schedule.date).toLocaleDateString('pt-BR'),
+                        "Solicitante": requester,
+                        "Ativo": asset?.name || "Desconhecido",
+                        "Nº Ativo": asset?.assetNumber || "-",
+                        "Plaqueta": asset?.tagNumber || "-",
+                        "CC Anterior": currentCC || "-",
+                        "Novo CC": item.newCostCenter || "-",
+                        "Status": item.verified ? "Verificado" : "Não Verificado",
+                        "Responsável": responsibles,
+                        "Data Execução": schedule.completedAt ? new Date(schedule.completedAt).toLocaleString('pt-BR') : "-",
+                        "Aprovador": schedule.approvedBy || "-",
+                        "Data Aprovação": schedule.approvedAt ? new Date(schedule.approvedAt).toLocaleString('pt-BR') : "-",
+                        "Obs. Agendamento": schedule.notes || "-",
+                        "Obs. Item": item.observations || "-"
+                      };
+                    });
+                  });
+
+                  if (itemsToExport.length === 0) {
+                    toast.error("Não há dados de inventário para exportar.");
+                    return;
+                  }
+
+                  const ws = XLSX.utils.json_to_sheet(itemsToExport);
+                  const wb = XLSX.utils.book_new();
+                  XLSX.utils.book_append_sheet(wb, ws, "Itens_Inventariados");
+                  ws['!cols'] = [{ wch: 12 }, { wch: 20 }, { wch: 30 }, { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 25 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 30 }, { wch: 30 }];
+                  XLSX.writeFile(wb, `relatorio_itens_inventario_${new Date().toISOString().split('T')[0]}.xlsx`);
+                  toast.success("Relatório de inventário exportado!");
+              }} className="bg-green-600 hover:bg-green-700 text-white">
+                <Download className="h-4 w-4 mr-2" />
+                Exportar Excel
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="rounded-md border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Data</TableHead>
+                  <TableHead>Solicitante</TableHead>
+                  <TableHead>Ativo</TableHead>
+                  <TableHead>CC Anterior</TableHead>
+                  <TableHead>Novo CC</TableHead>
+                  <TableHead className="text-center">Status</TableHead>
+                  <TableHead>Responsável</TableHead>
+                  <TableHead>Aprovador</TableHead>
+                  <TableHead>Obs.</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {completedSchedules.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                      Nenhum item inventariado encontrado.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  completedSchedules.flatMap(schedule => {
+                    const items = schedule.results || (schedule.assetIds ? schedule.assetIds.map(id => ({ assetId: id, verified: false, newCostCenter: '' })) : []);
+                    return items.map((item, idx) => {
+                      const asset = assets.find(a => a.id === item.assetId);
+                      const currentCC = typeof asset?.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset?.costCenter;
+                      const responsibles = (schedule.userIds || []).map(uid => users.find(u => u.id === uid)?.name).filter(Boolean).join(", ");
+                      const requester = users.find(u => String(u.id) === String(schedule.requesterId))?.name || "-";
+                      
+                      return (
+                        <TableRow key={`${schedule.id}_${item.assetId}_${idx}`}>
+                          <TableCell>{new Date(schedule.date).toLocaleDateString('pt-BR')}</TableCell>
+                          <TableCell>{requester}</TableCell>
+                          <TableCell>
+                            <div className="flex flex-col">
+                              <span className="font-medium">{asset?.name || "Desconhecido"}</span>
+                              <div className="flex gap-2 text-xs text-muted-foreground">
+                                <span>{asset?.assetNumber || "-"}</span>
+                                {asset?.tagNumber && <span>| {asset.tagNumber}</span>}
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell>{currentCC || "-"}</TableCell>
+                          <TableCell className={item.newCostCenter && item.newCostCenter !== currentCC ? "text-orange-600 font-medium" : ""}>{item.newCostCenter || "-"}</TableCell>
+                          <TableCell className="text-center">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                                item.verified ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                            }`}>
+                              {item.verified ? 'Verificado' : 'Não Verificado'}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-col">
+                              <span className="font-medium text-sm">{responsibles}</span>
+                              {schedule.completedAt && (
+                                <span className="text-[10px] text-slate-500">{new Date(schedule.completedAt).toLocaleString('pt-BR')}</span>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-col">
+                              <span className="font-medium text-sm">{schedule.approvedBy || "-"}</span>
+                              {schedule.approvedAt && (
+                                <span className="text-[10px] text-slate-500">{new Date(schedule.approvedAt).toLocaleString('pt-BR')}</span>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-col gap-1 max-w-[200px] text-xs">
+                                {schedule.notes && <span className="text-muted-foreground">Agend: {schedule.notes}</span>}
+                                {item.observations && <span>Item: {item.observations}</span>}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    });
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
       </TabsContent>
       </Tabs>
     </div>

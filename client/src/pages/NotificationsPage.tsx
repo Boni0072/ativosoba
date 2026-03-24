@@ -240,7 +240,12 @@ export default function NotificationsPage() {
 
     const taskTypes = {
       project_approval: (p: any) => `- Obra: ${p.name} (Status: ${p.status.replace(/_/g, ' ')})`,
-      movement_approval: (m: any) => `- Ativo: ${m.assetName} (${m.assetNumber}) para o CC ${m.destinationCostCenter}`,
+      movement_approval: (m: any) => {
+          if (m.isBatch || (m.assets && m.assets.length > 1)) {
+              return `- Lote: ${m.assets.length} ativos para o CC ${m.destinationCostCenter}`;
+          }
+          return `- Ativo: ${m.assetName} (${m.assetNumber}) para o CC ${m.destinationCostCenter}`;
+      },
       inventory_execution: (s: any) => `- Inventário para ${s.date?.toDate ? s.date.toDate().toLocaleDateString('pt-BR') : s.date} com ${s.assetIds.length} ativos`,
       inventory_approval: (s: any) => `- Inventário realizado em ${s.date?.toDate ? s.date.toDate().toLocaleDateString('pt-BR') : s.date} com ${s.results?.length || 0} ativos`,
     };

@@ -671,7 +671,10 @@ export default function AssetInventoryPage() {
                 destinationCostCenter: result.newCostCenter,
                 originProjectId: asset.projectId || null,
                 reason: `Ajuste via Inventário (${new Date(schedule.date).toLocaleDateString('pt-BR')})`,
-                createdAt: new Date().toISOString()
+                createdAt: new Date().toISOString(),
+                status: 'completed',
+                approvedBy: user?.name || "Sistema",
+                approvedAt: new Date().toISOString()
               });
             }
           }

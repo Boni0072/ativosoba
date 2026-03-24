@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { db } from "@/lib/firebase";
-import { collection, onSnapshot, addDoc, updateDoc, doc, query, orderBy } from "firebase/firestore";
+import { collection, onSnapshot, addDoc, updateDoc, doc, query, orderBy, writeBatch } from "firebase/firestore";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ArrowRightLeft, History, AlertTriangle, Search, Plus, XCircle, Truck, ArrowLeft, Download, Clock, Check, X, ThumbsUp, ThumbsDown } from "lucide-react";
+import { ArrowRightLeft, History, AlertTriangle, Search, Plus, XCircle, Truck, ArrowLeft, Download, Clock, Check, X, ThumbsUp, ThumbsDown, QrCode } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "wouter";
 import * as XLSX from "xlsx";
@@ -43,6 +43,9 @@ export default function AssetMovementsPage() {
   const [viewingMovement, setViewingMovement] = useState<any | null>(null);
   const [addresses, setAddresses] = useState<{ requester?: string; approver?: string; rejecter?: string }>({});
   const [loadingAddresses, setLoadingAddresses] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+  const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   // Buscar Ativos
   useEffect(() => {
@@ -115,9 +118,63 @@ export default function AssetMovementsPage() {
     }
 }, [viewingMovement]);
 
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    let interval: NodeJS.Timeout;
+
+    if (isScanning) {
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+        .then(s => {
+          stream = s;
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+            videoRef.current.play().catch(console.error);
+          }
+
+          if ('BarcodeDetector' in window) {
+             try {
+                 // @ts-ignore
+                 const detector = new window.BarcodeDetector({ formats: ['qr_code', 'code_128', 'ean_13', 'data_matrix'] });
+                 interval = setInterval(async () => {
+                    if (videoRef.current && videoRef.current.readyState === 4) {
+                        try {
+                            const barcodes = await detector.detect(videoRef.current);
+                            if (barcodes.length > 0) {
+                                const rawValue = barcodes[0].rawValue;
+                                const asset = assets.find(a => 
+                                    (a.assetNumber && a.assetNumber === rawValue) || 
+                                    (a.tagNumber && a.tagNumber === rawValue)
+                                );
+                                if (asset) {
+                                    handleAssetSelect(asset.id);
+                                    setIsScanning(false);
+                                    toast.success(`Ativo identificado: ${asset.name}`);
+                                }
+                            }
+                        } catch (e) {}
+                    }
+                 }, 500);
+             } catch (e) { console.warn("BarcodeDetector error", e); }
+          }
+        })
+        .catch(err => {
+          console.error("Erro câmera", err);
+          toast.error("Erro ao acessar câmera.");
+          setIsScanning(false);
+        });
+    }
+
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+      }
+      if (interval) clearInterval(interval);
+    };
+  }, [isScanning, assets]);
+
   const handleApproveMovement = async (movement: any) => {
-    if (!movement.assetId) {
-      toast.error("ID do ativo não encontrado na movimentação.");
+    if (!movement.assetId && (!movement.assets || movement.assets.length === 0)) {
+      toast.error("Nenhum ativo encontrado na movimentação.");
       return;
     }
 
@@ -129,14 +186,21 @@ export default function AssetMovementsPage() {
     });
 
     try {
-      const assetUpdate: any = { status: 'ativo' };
-      if (movement.type === 'transfer_project') {
-        assetUpdate.projectId = movement.destinationProjectId;
-      } else if (movement.type === 'transfer_cost_center') {
-        assetUpdate.costCenter = movement.destinationCostCenter;
-      }
+      const batch = writeBatch(db);
+      
+      const assetsToProcess = movement.isBatch ? movement.assets : [{ assetId: movement.assetId }];
 
-      await updateDoc(doc(db, "assets", movement.assetId), assetUpdate);
+      assetsToProcess.forEach((item: any) => {
+          const assetRef = doc(db, "assets", item.assetId);
+          const assetUpdate: any = { status: 'ativo' };
+          
+          if (movement.type === 'transfer_project') {
+            assetUpdate.projectId = movement.destinationProjectId;
+          } else if (movement.type === 'transfer_cost_center') {
+            assetUpdate.costCenter = movement.destinationCostCenter;
+          }
+          batch.update(assetRef, assetUpdate);
+      });
 
       const movementUpdate = {
         status: 'completed',
@@ -144,7 +208,10 @@ export default function AssetMovementsPage() {
         approvedAt: new Date().toISOString(),
         approverLocation,
       };
-      await updateDoc(doc(db, "asset_movements", movement.id), movementUpdate);
+      
+      const movementRef = doc(db, "asset_movements", movement.id);
+      batch.update(movementRef, movementUpdate);
+      await batch.commit();
 
       toast.success("Recebimento de ativo aprovado com sucesso!");
     } catch (error) {
@@ -154,8 +221,8 @@ export default function AssetMovementsPage() {
   };
 
   const handleRejectMovement = async (movement: any) => {
-    if (!movement.assetId) {
-      toast.error("ID do ativo não encontrado na movimentação.");
+    if (!movement.assetId && (!movement.assets || movement.assets.length === 0)) {
+      toast.error("Nenhum ativo encontrado na movimentação.");
       return;
     }
 
@@ -167,7 +234,13 @@ export default function AssetMovementsPage() {
     });
 
     try {
-      await updateDoc(doc(db, "assets", movement.assetId), { status: 'ativo' });
+      const batch = writeBatch(db);
+      const assetsToProcess = movement.isBatch ? movement.assets : [{ assetId: movement.assetId }];
+
+      assetsToProcess.forEach((item: any) => {
+          const assetRef = doc(db, "assets", item.assetId);
+          batch.update(assetRef, { status: 'ativo' });
+      });
 
       const movementUpdate = {
         status: 'rejected',
@@ -175,7 +248,9 @@ export default function AssetMovementsPage() {
         rejectedAt: new Date().toISOString(),
         rejecterLocation,
       };
-      await updateDoc(doc(db, "asset_movements", movement.id), movementUpdate);
+      const movementRef = doc(db, "asset_movements", movement.id);
+      batch.update(movementRef, movementUpdate);
+      await batch.commit();
 
       toast.warning("Recebimento de ativo foi rejeitado.");
     } catch (error) {
@@ -206,21 +281,32 @@ export default function AssetMovementsPage() {
   ];
 
   const handleAssetSelect = (assetId: string) => {
+    if (!selectedAssetIds.includes(assetId)) {
+      setSelectedAssetIds(prev => [...prev, assetId]);
+    } else {
+      toast.info("Ativo já adicionado à lista.");
+      return;
+    }
+
     const asset = assets.find(a => a.id === assetId);
-    if (asset) {
+    // Preenche destino apenas se for o primeiro ativo selecionado
+    if (asset && selectedAssetIds.length === 0) {
       setFormData(prev => ({
         ...prev,
-        assetId,
         destinationProjectId: asset.projectId || "",
         destinationCostCenter: typeof asset.costCenter === 'object' ? asset.costCenter.code : asset.costCenter || "",
       }));
     }
   };
 
+  const handleRemoveAsset = (id: string) => {
+    setSelectedAssetIds(prev => prev.filter(assetId => assetId !== id));
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.assetId || !formData.type) {
-      toast.error("Preencha os campos obrigatórios.");
+    if (selectedAssetIds.length === 0 || !formData.type) {
+      toast.error("Selecione pelo menos um ativo e o tipo de movimentação.");
       return;
     }
 
@@ -238,54 +324,73 @@ export default function AssetMovementsPage() {
       );
     });
 
-    const asset = assets.find(a => a.id === formData.assetId);
-    if (!asset) {
-        toast.error("Ativo selecionado não encontrado.");
-        return;
-    }
-
-    const movementType = MOVEMENT_TYPES.find(t => t.value === formData.type);
-    const isTransfer = movementType?.type === 'transfer';
-
-    const movementData = {
-      ...formData,
-      assetName: asset.name,
-      assetNumber: asset.assetNumber,
-      originProjectId: asset.projectId || null,
-      originCostCenter: typeof asset.costCenter === 'object' ? asset.costCenter.code : asset.costCenter || null,
-      movementCategory: movementType?.type || "other",
-      createdAt: new Date().toISOString(),
-      performedBy: user?.name || "Sistema",
-      requesterLocation,
-      status: isTransfer ? 'pending_approval' : 'completed',
-    };
-
     try {
-      // 1. Registrar Movimentação
+      const assetsToMove = selectedAssetIds.map(id => assets.find(a => a.id === id)).filter(Boolean);
+      if (assetsToMove.length === 0) return;
+
+      const movementType = MOVEMENT_TYPES.find(t => t.value === formData.type);
+      const isTransfer = movementType?.type === 'transfer';
+
+      const movementData = {
+          ...formData,
+          // Dados consolidados ou do primeiro item para compatibilidade visual na lista
+          assetId: assetsToMove.length === 1 ? assetsToMove[0].id : null,
+          assetName: assetsToMove.length === 1 ? assetsToMove[0].name : `${assetsToMove.length} Ativos (Lote)`,
+          assetNumber: assetsToMove.length === 1 ? assetsToMove[0].assetNumber : "-",
+          isBatch: assetsToMove.length > 1,
+          assets: assetsToMove.map(a => ({
+              assetId: a.id,
+              assetName: a.name,
+              assetNumber: a.assetNumber,
+              originProjectId: a.projectId || null,
+              originCostCenter: typeof a.costCenter === 'object' ? a.costCenter.code : a.costCenter || null,
+              value: a.value
+          })),
+          
+          originProjectId: assetsToMove[0].projectId || null,
+          originCostCenter: typeof assetsToMove[0].costCenter === 'object' ? assetsToMove[0].costCenter.code : assetsToMove[0].costCenter || null,
+          movementCategory: movementType?.type || "other",
+          createdAt: new Date().toISOString(),
+          performedBy: user?.name || "Sistema",
+          requesterLocation,
+          status: isTransfer ? 'pending_approval' : 'completed',
+      };
+
+      // 1. Registrar Movimentação Única
       await addDoc(collection(db, "asset_movements"), movementData);
 
-      // 2. Atualizar Ativo
-      const updateData: any = {};
+      // 2. Atualizar Ativos (Batch para performance)
+      const batch = writeBatch(db);
       
-      if (isTransfer) {
-        updateData.status = "em_transito";
-      } else if (movementType?.type === "write_off") {
-        updateData.status = "baixado";
-        updateData.writeOffDate = formData.date;
-        updateData.writeOffReason = formData.reason;
-        updateData.writeOffValue = formData.value;
-      } else if (movementType?.type === "partial_write_off") {
-        const currentValue = Number(asset.value || 0);
-        const reduction = Number(formData.value || 0);
-        updateData.value = Math.max(0, currentValue - reduction);
-      }
+      assetsToMove.forEach(asset => {
+          const assetRef = doc(db, "assets", asset.id);
+          const updateData: any = {};
+          
+          if (isTransfer) {
+            updateData.status = "em_transito";
+          } else if (movementType?.type === "write_off") {
+            updateData.status = "baixado";
+            updateData.writeOffDate = formData.date;
+            updateData.writeOffReason = formData.reason;
+            updateData.writeOffValue = formData.value;
+          } else if (movementType?.type === "partial_write_off") {
+            const currentValue = Number(asset.value || 0);
+            const reduction = Number(formData.value || 0);
+            const finalReduction = formData.percentage 
+              ? (currentValue * (Number(formData.percentage) / 100)) 
+              : reduction;
+            updateData.value = Math.max(0, currentValue - finalReduction);
+          }
+          if (Object.keys(updateData).length > 0) {
+              batch.update(assetRef, updateData);
+          }
+      });
 
-      if (Object.keys(updateData).length > 0) {
-        await updateDoc(doc(db, "assets", formData.assetId), updateData);
-      }
+      await batch.commit();
 
-      toast.success(`Movimentação registrada! ${isTransfer ? 'Aguardando aprovação do recebimento.' : ''}`);
+      toast.success(`Movimentação registrada para ${selectedAssetIds.length} ativos!`);
       setIsModalOpen(false);
+      setSelectedAssetIds([]);
       setFormData({
         assetId: "",
         type: "",
@@ -406,34 +511,59 @@ export default function AssetMovementsPage() {
                 Nova Movimentação
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-2xl">
+            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Registrar Movimentação ou Baixa</DialogTitle>
               </DialogHeader>
               <form onSubmit={handleSubmit} className="space-y-4 py-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="col-span-2">
-                    <label className="text-sm font-medium mb-1 block">Selecione o Ativo</label>
-                    <Select 
-                      value={formData.assetId} 
-                      onValueChange={(v) => {
-                          setFormData(prev => ({ ...prev, assetId: v }));
-                          handleAssetSelect(v);
-                      }}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Buscar ativo..." />
-                      </SelectTrigger>
-                      <SelectContent className="max-h-[300px]">
-                        {assets
-                          .filter(a => a.status !== "baixado" && a.status !== "em_transito")
-                          .map((asset) => (
-                          <SelectItem key={asset.id} value={asset.id}>
-                            {asset.assetNumber} - {asset.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <label className="text-sm font-medium mb-1 block">Adicionar Ativos ({selectedAssetIds.length} selecionados)</label>
+                    <div className="flex gap-2">
+                      <Select 
+                        value={""} 
+                        onValueChange={(v) => {
+                            handleAssetSelect(v);
+                        }}
+                      >
+                        <SelectTrigger className="flex-1">
+                          <SelectValue placeholder="Selecionar ativo para adicionar..." />
+                        </SelectTrigger>
+                        <SelectContent className="max-h-[300px]">
+                          {assets
+                            .filter(a => a.status !== "baixado" && a.status !== "em_transito")
+                            .map((asset) => (
+                            <SelectItem key={asset.id} value={asset.id}>
+                              {asset.assetNumber} - {asset.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button 
+                        type="button" 
+                        variant="outline" 
+                        size="icon" 
+                        onClick={() => setIsScanning(true)}
+                        title="Ler Código de Barras"
+                      >
+                        <QrCode className="h-4 w-4" />
+                      </Button>
+                    </div>
+
+                    {selectedAssetIds.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-2 p-2 border rounded bg-slate-50 max-h-[100px] overflow-y-auto">
+                        {selectedAssetIds.map(id => {
+                          const asset = assets.find(a => a.id === id);
+                          return (
+                            <div key={id} className="flex items-center gap-1 bg-white border px-2 py-1 rounded text-xs shadow-sm">
+                              <span className="font-medium">{asset?.tagNumber || asset?.assetNumber}</span>
+                              <span className="text-muted-foreground truncate max-w-[100px]">- {asset?.name}</span>
+                              <button type="button" onClick={() => handleRemoveAsset(id)} className="text-red-500 hover:text-red-700 ml-1"><X size={12} /></button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   <div className="col-span-1">
@@ -533,31 +663,19 @@ export default function AssetMovementsPage() {
                               className="bg-white"
                               value={formData.percentage}
                               onChange={(e) => {
-                                const pct = e.target.value;
-                                const asset = assets.find(a => a.id === formData.assetId);
-                                let val = formData.value;
-                                if (asset && asset.value) {
-                                    val = (Number(asset.value) * (Number(pct) / 100)).toFixed(2);
-                                }
-                                setFormData(prev => ({ ...prev, percentage: pct, value: val }));
+                                setFormData(prev => ({ ...prev, percentage: e.target.value, value: "" })); // Clear value if % is used to avoid ambiguity
                               }}
                             />
                           </div>
                           <div>
-                            <label className="text-sm font-medium mb-1 block">Valor da Baixa (R$)</label>
+                            <label className="text-sm font-medium mb-1 block">Valor da Baixa (R$ por ativo)</label>
                             <Input 
                               type="number" 
                               placeholder="0,00"
                               className="bg-white"
                               value={formData.value}
                               onChange={(e) => {
-                                const val = e.target.value;
-                                const asset = assets.find(a => a.id === formData.assetId);
-                                let pct = formData.percentage;
-                                if (asset && asset.value && Number(asset.value) > 0) {
-                                    pct = ((Number(val) / Number(asset.value)) * 100).toFixed(2);
-                                }
-                                setFormData(prev => ({ ...prev, value: val, percentage: pct }));
+                                setFormData(prev => ({ ...prev, value: e.target.value, percentage: "" }));
                               }}
                             />
                           </div>
@@ -582,6 +700,23 @@ export default function AssetMovementsPage() {
           </Dialog>
         </div>
       </div>
+
+      {isScanning && (
+        <div className="fixed inset-0 z-[100] bg-black flex flex-col">
+            <div className="relative flex-1 bg-black flex items-center justify-center">
+                <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
+                <div className="absolute inset-0 border-2 border-white/50 m-12 rounded-lg pointer-events-none"></div>
+                <div className="absolute top-4 right-4 z-[101]">
+                    <Button variant="ghost" size="icon" className="text-white bg-black/50 hover:bg-black/70 rounded-full" onClick={() => setIsScanning(false)}>
+                        <X className="h-8 w-8" />
+                    </Button>
+                </div>
+            </div>
+            <div className="p-6 bg-black text-white text-center font-medium">
+                Aponte a câmera para o código do ativo
+            </div>
+        </div>
+      )}
 
       <div className="flex items-center gap-4 bg-white p-4 rounded-lg border shadow-sm">
         <Search className="text-gray-400" />
@@ -608,6 +743,26 @@ export default function AssetMovementsPage() {
             <div className="py-4 space-y-4 text-sm">
               <div className="p-4 bg-slate-50 rounded-lg border">
                 <h4 className="font-semibold text-base mb-2">Ativo Movimentado</h4>
+                {viewingMovement.isBatch && viewingMovement.assets ? (
+                  <div className="max-h-[150px] overflow-y-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-left text-muted-foreground border-b">
+                          <th className="pb-1">Ativo</th>
+                          <th className="pb-1">Número</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {viewingMovement.assets.map((a: any, idx: number) => (
+                          <tr key={idx} className="border-b border-slate-100 last:border-0">
+                            <td className="py-1 font-medium">{a.assetName}</td>
+                            <td className="py-1 font-mono">{a.assetNumber}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <p className="text-xs text-muted-foreground">Nome</p>
@@ -618,6 +773,7 @@ export default function AssetMovementsPage() {
                     <p className="font-medium">{viewingMovement.assetNumber}</p>
                   </div>
                 </div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -892,7 +1048,14 @@ export default function AssetMovementsPage() {
                             {movement.type === 'transfer_cost_center' ? getCostCenterResponsible(movement.destinationCostCenter) : "Aprovação"}
                           </span>
                         ) : (
-                          movement.approvedBy || (movement.rejectedBy ? `Rejeitado por ${movement.rejectedBy}` : "-")
+                          <div className="flex flex-col">
+                            <span className="font-medium text-slate-700">{movement.approvedBy || (movement.rejectedBy ? `Rejeitado por ${movement.rejectedBy}` : "-")}</span>
+                            {(movement.approvedAt || movement.rejectedAt) && (
+                              <span className="text-[10px] text-slate-500">
+                                {new Date(movement.approvedAt || movement.rejectedAt).toLocaleString('pt-BR')}
+                              </span>
+                            )}
+                          </div>
                         )}
                       </TableCell>
                       <TableCell>
