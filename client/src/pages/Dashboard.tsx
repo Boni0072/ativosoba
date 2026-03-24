@@ -817,6 +817,77 @@ export default function Dashboard() {
     });
   }, [assetMovementData]);
 
+  const schedulesByCostCenter = useMemo(() => {
+    if (!schedules.length || !costCenters.length) return [];
+
+    const ccMap: Record<string, { name: string; completed: number; uncompleted: number }> = {};
+
+    // Initialize map with all cost centers
+    costCenters.forEach(cc => {
+        ccMap[cc.code] = { name: cc.name, completed: 0, uncompleted: 0 };
+    });
+    ccMap["Sem CC"] = { name: "Sem Centro de Custo", completed: 0, uncompleted: 0 };
+
+
+    schedules.forEach(schedule => {
+        let associatedCCs: string[] = [];
+        if (schedule.costCenterCodes && schedule.costCenterCodes.length > 0) {
+            associatedCCs = schedule.costCenterCodes;
+        } else if (schedule.assetIds && schedule.assetIds.length > 0) {
+            // Fallback: get CC from assets if not directly on schedule
+            const assetCCs = schedule.assetIds.map((assetId: string) => {
+                const asset = assets.find(a => a.id === assetId);
+                if (!asset) return null;
+                const ccCode = typeof asset.costCenter === 'object' ? asset.costCenter?.code : asset.costCenter;
+                return ccCode;
+            }).filter(Boolean);
+            associatedCCs = [...new Set(assetCCs)]; // Unique CCs from assets
+        }
+
+        if (associatedCCs.length === 0) {
+            associatedCCs.push("Sem CC");
+        }
+
+        associatedCCs.forEach(ccCode => {
+            if (!ccMap[ccCode]) {
+                 const ccObj = costCenters.find(c => c.code === ccCode);
+                 ccMap[ccCode] = { name: ccObj ? ccObj.name : ccCode, completed: 0, uncompleted: 0 };
+            }
+
+            if (schedule.status === 'completed') {
+                ccMap[ccCode].completed++;
+            } else {
+                ccMap[ccCode].uncompleted++;
+            }
+        });
+    });
+
+    return Object.values(ccMap).map(data => {
+        const total = data.completed + data.uncompleted;
+        const percentage = total > 0 ? (data.completed / total) * 100 : 0;
+        return { ...data, total, percentage };
+    }).filter(
+        data => data.total > 0
+    ).sort((a,b) => b.total - a.total);
+
+  }, [schedules, assets, costCenters]);
+
+  const renderCustomizedLabel = (props: any) => {
+    const { x, y, width, value, payload } = props;
+
+    if (!payload || value === 0) {
+      return null;
+    }
+
+    const { completed, percentage } = payload;
+
+    return (
+      <text x={x + width / 2} y={y} dy={-4} fill="#374151" fontSize={11} fontWeight={500} textAnchor="middle">
+        {`${completed}/${value} (${percentage.toFixed(0)}%)`}
+      </text>
+    );
+  };
+
   const movementTotals = useMemo(() => {
     if (!depreciationModalData || !assets || !expenses || !assetClasses) return null;
 
@@ -1855,6 +1926,38 @@ export default function Dashboard() {
 
             {isScheduleAnalysisExpanded && (
             <div className="space-y-6 animate-in fade-in slide-in-from-top-4 duration-300">
+                <Card>
+                    <CardHeader className="pb-2">
+                        <CardTitle className="text-lg font-semibold text-slate-700">Inventários por Centro de Custo</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="h-[300px] w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart
+                                    data={schedulesByCostCenter}
+                                    margin={{ top: 40, right: 30, left: 20, bottom: 60 }}
+                                >
+                                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                                    <XAxis dataKey="name" angle={-45} textAnchor="end" interval={0} tick={{ fill: '#64748b', fontSize: 11 }} height={80} />
+                                    <YAxis allowDecimals={false} tick={{ fill: '#64748b', fontSize: 12 }} />
+                                    <RechartsTooltip
+                                        cursor={{ fill: '#f1f5f9' }}
+                                        contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                                    />
+                                    <Legend wrapperStyle={{ fontSize: 12, paddingTop: 10 }}/>
+                                    <Bar dataKey="completed" name="Concluídos" stackId="a" fill="#22c55e" />
+                                    <Bar dataKey="uncompleted" name="Pendentes" stackId="a" fill="#d1d5db" radius={[4, 4, 0, 0]}>
+                                        <LabelList
+                                            dataKey="total"
+                                            content={renderCustomizedLabel}
+                                        />
+                                    </Bar>
+                                </BarChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </CardContent>
+                </Card>
+
                 <div className="grid md:grid-cols-2 gap-6">
                 {/* Gráfico de Agendamentos por Mês */}
                 <Card>
