@@ -257,7 +257,7 @@ export default function NotificationsPage() {
       inventory_approval: "APROVAÇÕES DE INVENTÁRIO",
     };
 
-    let corpoEmail = `Olá ${userGroup.userName},\n\nIdentificamos ${userGroup.tasks.length} pendências no Sistema de Gestão de Obras aguardando sua regularização:\n\n`;
+    let corpoEmail = `Olá ${userGroup.userName},\n\nIdentificamos ${userGroup.tasks.length} pendências no Sistema de Gestão Oba aguardando sua regularização:\n\n`;
     Object.entries(taskHeaders).forEach(([type, header]) => {
       const tasks = userGroup.tasks.filter((t: any) => t.type === type);
       if (tasks.length > 0) {

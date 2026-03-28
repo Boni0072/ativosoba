@@ -377,7 +377,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           {sidebarOpen && (
             <div className="flex flex-col items-center gap-2">
               <img src="/oba.svg" alt="Ícone Oba" className="w-48 h-48 object-contain" />
-              <h2 className="text-xl font-bold">Controle de Obras</h2>
+              <h2 className="text-xl font-bold">Controle de Oba</h2>
             </div>
           )}
           <button
@@ -518,7 +518,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                 <Menu size={24} className="text-slate-700" />
               </button>
             )}
-            <h1 className="text-2xl font-bold text-slate-700">Sistema de Gestão de Obras</h1>
+            <h1 className="text-2xl font-bold text-slate-700">Sistema de Gestão Oba</h1>
           </div>
           <div className="flex items-center gap-4">
             

@@ -1,4 +1,4 @@
-# Sistema de Gestão de Obras - TODO
+# Sistema de Gestão Oba - TODO
 
 ## Banco de Dados
 - [x] Criar tabela de obras (projects)

@@ -89,7 +89,7 @@ export default function Home() {
 
       {/* Footer */}
       <footer className="border-t border-slate-700 py-8 text-center text-gray-400">
-        <p>&copy; 2026 Sistema de Gestão de Obras. Todos os direitos reservados.</p>
+        <p>&copy; 2026 Sistema de Gestão Oba. Todos os direitos reservados.</p>
       </footer>
     </div>
   );

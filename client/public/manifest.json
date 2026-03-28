@@ -1,7 +1,7 @@
 {
   "name": "Control Oba",
   "short_name": "Control Oba",
-  "description": "Sistema de Controle de Obras e Ativos",
+  "description": "Sistema de Controle de Oba e Ativos",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0b543e",
