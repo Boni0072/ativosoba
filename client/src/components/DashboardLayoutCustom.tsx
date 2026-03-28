@@ -313,7 +313,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const totalNotifications = pendingProjects.length + pendingInventoryCount + pendingInventoryApprovalCount + pendingMovements.length;
 
   useEffect(() => {
-    const baseTitle = "Control Obra/Ativos";
+    const baseTitle = "Control Inventário";
     let interval: ReturnType<typeof setInterval>;
 
     if (totalNotifications > 0) {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useLocation } from "wouter";
 import { collection, query, where, getDocs, updateDoc, doc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, LogIn, Trash2 } from "lucide-react";
+import { Loader2, LogIn, Trash2, Smartphone } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Login() {
@@ -23,6 +23,38 @@ export default function Login() {
   const [setupSignature, setSetupSignature] = useState("");
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
+
+  // Estado para o prompt de instalação PWA
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [showInstallBtn, setShowInstallBtn] = useState(false);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: Event) => {
+      // Impede o mini-infobar padrão do Chrome
+      e.preventDefault();
+      // Guarda o evento para ser disparado pelo botão
+      setDeferredPrompt(e);
+      setShowInstallBtn(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (!deferredPrompt) return;
+    
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    
+    if (outcome === 'accepted') {
+      setShowInstallBtn(false);
+    }
+    setDeferredPrompt(null);
+  };
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -283,6 +315,20 @@ export default function Login() {
               )}
             </Button>
           </CardFooter>
+          
+          {showInstallBtn && (
+            <div className="px-6 pb-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <Button 
+                type="button"
+                variant="outline" 
+                className="w-full border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white gap-2 h-12"
+                onClick={handleInstallApp}
+              >
+                <Smartphone className="w-4 h-4" />
+                Instalar no Celular
+              </Button>
+            </div>
+          )}
         </form>
       </Card>
 

@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { db } from "@/lib/firebase";
-import { collection, onSnapshot, updateDoc, doc } from "firebase/firestore";
+import { collection, onSnapshot, updateDoc, doc, addDoc } from "firebase/firestore";
 import { ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Tooltip as RechartsTooltip, PieChart, Pie, Cell, Legend, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, LabelList, Mail } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -104,6 +104,54 @@ export default function Dashboard() {
   const [assetClasses, setAssetClasses] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+
+  const handleAutoSchedule = async (ccCode: string, assetsToSchedule: any[]) => {
+    const currentUserId = (user as any)?.id || (user as any)?.openId || (user as any)?.uid || (user as any)?.sub;
+    
+    if (!currentUserId) {
+      toast.error("Usuário não autenticado.");
+      return;
+    }
+
+    const cc = costCenters.find(c => c.code === ccCode);
+    const assetIds = assetsToSchedule.map(a => a.id);
+
+    // Identificar responsáveis baseados no CC
+    let responsibleIds: string[] = [];
+    if (cc?.responsible) {
+      const foundUser = users.find(u => u.name?.trim().toLowerCase() === cc.responsible?.trim().toLowerCase());
+      if (foundUser) responsibleIds.push(foundUser.id);
+    }
+    
+    // Fallback: se não encontrar responsável, atribui ao usuário logado
+    if (responsibleIds.length === 0) {
+      responsibleIds.push(currentUserId);
+    }
+
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    try {
+      const newSchedule = {
+        requesterId: currentUserId,
+        assetIds: assetIds,
+        costCenterCodes: [ccCode],
+        userIds: responsibleIds,
+        date: tomorrow.toISOString().split('T')[0],
+        notes: `Agendamento automático via Dashboard (Sugestão de Cronograma - CC: ${ccCode})`,
+        status: 'pending',
+        createdAt: new Date().toISOString()
+      };
+
+      await addDoc(collection(db, "inventory_schedules"), newSchedule);
+      toast.success(`Agendamento criado com sucesso para o CC ${ccCode}!`, {
+        description: `${assetIds.length} ativos atribuídos para amanhã.`
+      });
+    } catch (error) {
+      console.error("Erro ao criar agendamento automático:", error);
+      toast.error("Falha ao criar agendamento.");
+    }
+  };
 
   useEffect(() => {
     const unsubProjects = onSnapshot(collection(db, "projects"), (snapshot) => {
@@ -2091,27 +2139,26 @@ export default function Dashboard() {
                             }
 
                             // Agrupa por Centro de Custo para sugestão
-                            const suggestions = Object.entries(outdatedAssets.reduce((acc, asset) => {
+                            const assetsByCC = outdatedAssets.reduce((acc, asset) => {
                                 const cc = typeof asset.costCenter === 'object' ? (asset.costCenter as any).code : asset.costCenter || "Sem CC";
-                                if (!acc[cc]) acc[cc] = 0;
-                                acc[cc]++;
+                                if (!acc[cc]) acc[cc] = [];
+                                acc[cc].push(asset);
                                 return acc;
-                            }, {} as Record<string, number>))
-                            .sort((a, b) => b[1] - a[1])
+                            }, {} as Record<string, any[]>);
+
+                            const suggestions = Object.entries(assetsByCC)
+                            .sort((a, b) => b[1].length - a[1].length)
                             .slice(0, 3); // Top 3 sugestões
 
                             return (
                                 <div className="grid md:grid-cols-3 gap-4">
-                                    {suggestions.map(([cc, count]) => (
+                                    {suggestions.map(([cc, assetsInCC]) => (
                                         <div key={cc} className="bg-white p-3 rounded border border-slate-200 shadow-sm flex justify-between items-center">
                                             <div>
                                                 <p className="font-medium text-slate-700">{cc}</p>
-                                                <p className="text-xs text-slate-500">{count} ativos pendentes</p>
+                                                <p className="text-xs text-slate-500">{assetsInCC.length} ativos pendentes</p>
                                             </div>
-                                            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => {
-                                                // Aqui poderia abrir o modal de agendamento pré-filtrado
-                                                setShowAssetsModal(true); 
-                                            }}>
+                                            <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => handleAutoSchedule(cc, assetsInCC)}>
                                                 Agendar
                                             </Button>
                                         </div>
