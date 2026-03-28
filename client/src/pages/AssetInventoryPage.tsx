@@ -1060,7 +1060,7 @@ export default function AssetInventoryPage() {
       const doc = new jsPDF();
       let logoData: string | null = null;
       try {
-        logoData = await getBase64ImageFromURL("/oba.svg");
+        logoData = await getBase64ImageFromURL("/icone.png");
       } catch (error) {
         console.warn("Logo não carregado:", error);
       }
@@ -1133,7 +1133,7 @@ export default function AssetInventoryPage() {
       const doc = new jsPDF();
       let logoData: string | null = null;
       try {
-        logoData = await getBase64ImageFromURL("/oba.svg");
+        logoData = await getBase64ImageFromURL("/icone.png");
       } catch (error) {
         console.warn("Logo não carregado:", error);
       }

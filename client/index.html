@@ -6,7 +6,9 @@
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1" />
-    <link rel="icon" type="image/png" href="/icone.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#0b543e" />
+    <link rel="icon" type="image/svg+xml" href="/oba.svg" />
     <title>Control Obra</title>    
     <!-- THIS IS THE START OF A COMMENT BLOCK, BLOCK TO BE DELETED: Google Fonts here, example:
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -18,6 +20,15 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').then(reg => {
+            console.log('SW registrado:', reg);
+          }).catch(err => console.log('Erro SW:', err));
+        });
+      }
+    </script>
     <!-- Analytics desativado temporariamente para evitar erros de console
     <script
       defer

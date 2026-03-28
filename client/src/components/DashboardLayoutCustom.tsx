@@ -376,7 +376,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         <div className="p-4 border-b border-[#a5b3c4] flex items-center justify-center relative">
           {sidebarOpen && (
             <div className="flex flex-col items-center gap-2">
-              <img src="/oba.svg" alt="Ícone Oba" className="w-32 h-32" />
+              <img src="/oba.svg" alt="Ícone Oba" className="w-48 h-48 object-contain" />
               <h2 className="text-xl font-bold">Controle de Obras</h2>
             </div>
           )}

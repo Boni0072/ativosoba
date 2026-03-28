@@ -994,7 +994,7 @@ export default function Dashboard() {
             <img 
               src="/oba.svg" 
               alt="Alternar Visão" 
-              className={`w-12 h-12 transition-all duration-700 ease-in-out group-hover:scale-110 ${viewMode !== 'budget' ? 'rotate-[360deg]' : 'rotate-0'}`} 
+              className={`w-20 h-20 transition-all duration-700 ease-in-out group-hover:scale-110 ${viewMode !== 'budget' ? 'rotate-[360deg]' : 'rotate-0'}`} 
             />
           </div>
         </Button>

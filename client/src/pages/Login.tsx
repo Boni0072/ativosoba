@@ -257,7 +257,7 @@ export default function Login() {
           <div className="relative w-28 h-28 mb-2">
             <div className="absolute inset-0 bg-orange-500/30 rounded-full blur-xl animate-pulse" />
             <img 
-              src="/oba.svg" 
+              src="/icone.png" 
               alt="Logo Oba" 
               className="w-full h-full relative z-10 drop-shadow-lg animate-[bounce_3s_infinite]"
             />
