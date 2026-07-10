@@ -1,0 +1,1890 @@
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import { db } from "@/lib/firebase";
+import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, writeBatch } from "firebase/firestore";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Loader2, Plus, Trash2, CheckCircle, AlertTriangle, Pencil, Eye, ChevronDown, ChevronUp, ChevronRight, Download, Upload, ArrowRightLeft, Filter, Search } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Checkbox } from "@/components/ui/checkbox";
+import { toast } from "sonner";
+import { Progress } from "@/components/ui/progress";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import AssetCalculations from "./AssetCalculations";
+import * as XLSX from "xlsx";
+import { useLocation, Link } from "wouter";
+
+export default function AssetsPage() {
+  const [, setLocation] = useLocation();
+  const { user } = useAuth();
+  const [projects, setProjects] = useState<any[]>([]);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "projects"), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setProjects(data);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isImporting, setIsImporting] = useState(false);
+
+  // Estado para visualização de detalhes (movido para cima para permitir uso nas queries)
+  const [viewOpen, setViewOpen] = useState(false);
+  const [viewingAsset, setViewingAsset] = useState<any>(null);
+  const [viewItemsExpense, setViewItemsExpense] = useState<any | null>(null);
+
+  const [filters, setFilters] = useState({
+    assetNumber: "",
+    tagNumber: "",
+    description: "",
+    costCenter: "",
+    projectId: "all",
+    assetClass: "all",
+    status: "all",
+  });
+
+  const [searchTerm, setSearchTerm] = useState("");
+  const [assets, setAssets] = useState<any[]>([]);
+  const [expenses, setExpenses] = useState<any[]>([]);
+  const [assetClasses, setAssetClasses] = useState<any[]>([]);
+  const [costCenters, setCostCenters] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "assets"), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setAssets(data);
+      setIsLoading(false);
+    }, (error: any) => {
+      console.error("Erro no listener de ativos:", error);
+      if (error.code === 'resource-exhausted') {
+        toast.error("Limite de cota do Firebase atingido (Reads). Os dados podem não carregar corretamente.", { duration: 10000 });
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "expenses"), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setExpenses(data);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "asset_classes"), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setAssetClasses(data);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "cost_centers"), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setCostCenters(data);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Sync viewingAsset with real-time assets data to reflect depreciation updates
+  useEffect(() => {
+    if (viewOpen && viewingAsset) {
+      const currentAsset = assets.find(a => a.id === viewingAsset.id);
+      if (currentAsset && JSON.stringify(currentAsset) !== JSON.stringify(viewingAsset)) {
+        setViewingAsset(currentAsset);
+      }
+    }
+  }, [assets, viewOpen, viewingAsset]);
+
+  const [open, setOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formData, setFormData] = useState({
+    projectId: "",
+    assetNumber: "",
+    name: "",
+    description: "",
+    tagNumber: "",
+    value: "",
+    quantity: "1",
+    startDate: new Date().toISOString().split("T")[0],
+    notes: "",
+    accountingAccount: "",
+    assetClass: "",
+    usefulLife: "",
+    corporateUsefulLife: "",
+    depreciationAccountCode: "",
+    amortizationAccountCode: "",
+    resultAccountCode: "",
+    costCenter: "",
+  });
+
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkActivationOpen, setBulkActivationOpen] = useState(false);
+  const [bulkActivationData, setBulkActivationData] = useState({
+    availabilityDate: new Date().toISOString().split("T")[0],
+    residualValue: "0",
+  });
+  const [bulkClassUpdateOpen, setBulkClassUpdateOpen] = useState(false);
+  const [newBulkClass, setNewBulkClass] = useState("");
+
+  // Estado para o processo de Ativação (Transferência CIP -> Imobilizado)
+  const [activationOpen, setActivationOpen] = useState(false);
+  const [assetToActivate, setAssetToActivate] = useState<any>(null);
+  const [activationData, setActivationData] = useState({
+    availabilityDate: new Date().toISOString().split("T")[0],
+    residualValue: "0",
+  });
+
+  const [expandedSections, setExpandedSections] = useState({
+    details: true,
+    composition: true,
+    calculations: true,
+  });
+
+  const toggleSection = (section: keyof typeof expandedSections) => {
+    setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }));
+  };
+
+  const formatCostCenter = (costCenter: any) => {
+    // Extract the code, whether costCenter is a string or an object { code: "...", name: "..." }
+    const ccCode = typeof costCenter === 'object' ? costCenter?.code : costCenter;
+    if (!ccCode) return "—"; // Handle undefined, null, or empty string codes
+    
+    // Try to find the full costCenter object in the loaded list (costCenters state)
+    const normalizedCode = String(ccCode).trim().toLowerCase();
+    const foundCcInList = costCenters?.find((c: any) => String(c.code).trim().toLowerCase() === normalizedCode);
+    
+    // If found in the list and it has a non-empty name, return that name
+    if (foundCcInList && foundCcInList.name && foundCcInList.name.trim() !== "") {
+      return foundCcInList.name;
+    }
+    
+    // Fallback: If the original 'costCenter' was an object and had a non-empty name, use that
+    // This handles cases where the asset might store a partial CC object directly, or if the list isn't loaded yet
+    if (typeof costCenter === 'object' && costCenter?.name && costCenter.name.trim() !== "") {
+      return costCenter.name;
+    }
+
+    // If no descriptive name is found, return the code itself
+    return String(ccCode);
+  };
+
+  const getLocalDateFromISO = (value: any) => {
+    if (!value) return null;
+    if (typeof value.toDate === 'function') return value.toDate();
+    if (value instanceof Date) return value;
+    const isoString = String(value);
+    if (isoString.length === 10 && isoString.includes('-')) {
+        const [y, m, d] = isoString.split('-').map(Number);
+        return new Date(y, m - 1, d);
+    }
+    return new Date(isoString);
+  };
+
+  const handleView = (asset: any) => {
+    setViewingAsset(asset);
+    setViewOpen(true);
+  };
+
+  const nextAssetNumber = useMemo(() => {
+    if (!assets || assets.length === 0) return "ATV-000001";
+    const numbers = assets
+      .map(a => a.assetNumber)
+      .filter(n => typeof n === 'string' && n.startsWith("ATV-"))
+      .map(n => parseInt(n.replace("ATV-", ""), 10))
+      .filter(n => !isNaN(n));
+    
+    const max = numbers.length > 0 ? Math.max(...numbers) : 0;
+    return `ATV-${String(max + 1).padStart(6, '0')}`;
+  }, [assets]);
+
+  useEffect(() => {
+    if (open && !formData.assetNumber && nextAssetNumber) {
+      setFormData(prev => ({ ...prev, assetNumber: nextAssetNumber }));
+    }
+  }, [open, formData.assetNumber, nextAssetNumber]);
+
+  const handleEdit = (asset: any) => {
+    let formattedDate = "";
+    try {
+      const date = getLocalDateFromISO(asset.startDate);
+      formattedDate = date ? date.toISOString().split("T")[0] : new Date().toISOString().split("T")[0];
+    } catch (e) {
+      formattedDate = new Date().toISOString().split("T")[0];
+    }
+    setFormData({
+      projectId: asset.projectId || "",
+      assetNumber: asset.assetNumber || "",
+      name: asset.name,
+      description: asset.description || "",
+      tagNumber: asset.tagNumber || "",
+      value: asset.value ? String(asset.value) : "",
+      quantity: asset.quantity ? String(asset.quantity) : "1",
+      startDate: formattedDate,
+      notes: asset.notes || "",
+      accountingAccount: asset.accountingAccount || "",
+      assetClass: asset.assetClass || "",
+      usefulLife: asset.usefulLife ? String(asset.usefulLife) : "",
+      corporateUsefulLife: asset.corporateUsefulLife ? String(asset.corporateUsefulLife) : "",
+      depreciationAccountCode: asset.depreciationAccountCode || "",
+      amortizationAccountCode: asset.amortizationAccountCode || "",
+      resultAccountCode: asset.resultAccountCode || "",
+      costCenter: (typeof asset.costCenter === 'object' ? asset.costCenter?.code : asset.costCenter) || "",
+    });
+    setEditingId(asset.id);
+    setOpen(true);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.projectId) {
+      toast.error("Selecione uma obra para o ativo");
+      return;
+    }
+
+    const payload = {
+      projectId: formData.projectId,
+      assetNumber: formData.assetNumber,
+      name: formData.name,
+      description: formData.description || "",
+      tagNumber: formData.tagNumber || "",
+      value: formData.value ? Number(formData.value) : 0,
+      quantity: formData.quantity ? Number(formData.quantity) : 1,
+      startDate: new Date(formData.startDate).toISOString(),
+      notes: formData.notes || "",
+      accountingAccount: formData.accountingAccount || "",
+      assetClass: formData.assetClass || "",
+      usefulLife: formData.usefulLife ? Number(formData.usefulLife) : 0,
+      corporateUsefulLife: formData.corporateUsefulLife ? Number(formData.corporateUsefulLife) : 0,
+      depreciationAccountCode: formData.depreciationAccountCode || "",
+      amortizationAccountCode: formData.amortizationAccountCode || "",
+      resultAccountCode: formData.resultAccountCode || "",
+      costCenter: formData.costCenter || "",
+    };
+
+    try {
+      if (editingId) {
+        await updateDoc(doc(db, "assets", editingId), payload);
+        toast.success("Ativo atualizado com sucesso!");
+      } else {
+        await addDoc(collection(db, "assets"), {
+          ...payload,
+          status: "concluido",
+          createdAt: new Date().toISOString()
+        });
+        toast.success("Ativo criado com sucesso!");
+      }
+      setFormData({ projectId: "", assetNumber: "", name: "", description: "", tagNumber: "", value: "", quantity: "1", startDate: new Date().toISOString().split("T")[0], notes: "", accountingAccount: "", assetClass: "", usefulLife: "", corporateUsefulLife: "", depreciationAccountCode: "", amortizationAccountCode: "", resultAccountCode: "", costCenter: "" });
+      setEditingId(null);
+      setOpen(false);
+      setViewItemsExpense(null);
+      
+      // If an asset was being viewed and it was the one just edited, update viewingAsset
+      if (editingId && viewingAsset && viewingAsset.id === editingId) {
+        const updatedViewingAsset = {
+          ...viewingAsset,
+          ...payload,
+          status: viewingAsset.status
+        };
+        if (updatedViewingAsset) {
+          setViewingAsset(updatedViewingAsset);
+        }
+      }
+    } catch (error) {
+      toast.error(editingId ? "Erro ao atualizar ativo" : "Erro ao criar ativo");
+    }
+  };
+
+  const handleStatusChange = async (asset: any, newStatus: string) => {
+    // Intercepta a conclusão para realizar o processo de Ativação (CPC 27)
+    if (newStatus === "concluido" && asset.status !== "concluido") {
+      setAssetToActivate(asset);
+      setActivationOpen(true);
+      return;
+    }
+
+    try {
+      const updateData: any = {
+        status: newStatus,
+      };
+      if (newStatus === 'baixado') {
+        updateData.writeOffDate = new Date().toISOString();
+      }
+      await updateDoc(doc(db, "assets", asset.id), updateData);
+
+      // Registro de Histórico de Status
+      await addDoc(collection(db, "asset_status_history"), {
+        assetId: asset.id,
+        assetName: asset.name,
+        assetNumber: asset.assetNumber || "N/A",
+        oldStatus: asset.status,
+        newStatus: newStatus,
+        changedBy: user?.name || "Sistema",
+        changedAt: new Date().toISOString(),
+        projectId: asset.projectId || null
+      });
+
+      toast.success("Status atualizado!");
+    } catch (error) {
+      toast.error("Erro ao atualizar status");
+    }
+  };
+
+  const handleActivationSubmit = async () => {
+    if (!assetToActivate) return;
+
+    try {
+      // Aqui é chamada a rota de ativação que define a data de início de depreciação (CPC 27)
+      await updateDoc(doc(db, "assets", assetToActivate.id), {
+        status: "concluido",
+        availabilityDate: new Date(activationData.availabilityDate).toISOString(),
+        residualValue: Number(activationData.residualValue) || 0,
+      });
+
+      // Registro de Histórico de Ativação
+      await addDoc(collection(db, "asset_status_history"), {
+        assetId: assetToActivate.id,
+        assetName: assetToActivate.name,
+        assetNumber: assetToActivate.assetNumber || "N/A",
+        oldStatus: assetToActivate.status,
+        newStatus: "concluido",
+        changedBy: user?.name || "Sistema",
+        changedAt: new Date().toISOString(),
+        projectId: assetToActivate.projectId || null,
+        notes: "Ativação de Imobilizado (CPC 27)"
+      });
+
+      toast.success("Ativo ativado e transferido para o Imobilizado Definitivo!");
+      setActivationOpen(false);
+      setAssetToActivate(null);
+    } catch (error) {
+      toast.error("Erro ao ativar o ativo.");
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, "assets", id));
+      toast.success("Ativo deletado com sucesso!");
+    } catch (error) {
+      toast.error("Erro ao deletar ativo");
+    }
+  };
+
+  const handleUnlinkItem = async (itemId: string) => {
+    try {
+      await updateDoc(doc(db, "expenses", itemId), { assetId: null });
+      toast.success("Despesa desvinculada do ativo!");
+    } catch (error) {
+      toast.error("Erro ao desvincular despesa.");
+    }
+  };
+
+  const toggleSelect = (id: string) => {
+    const next = new Set(selectedIds);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    setSelectedIds(next);
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === filteredAssets.length && filteredAssets.length > 0) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredAssets.map(a => a.id)));
+    }
+  };
+
+  const toggleSelectGroup = (groupAssets: any[]) => {
+    const groupIds = groupAssets.map(a => a.id);
+    const allInGroupSelected = groupIds.every(id => selectedIds.has(id));
+    
+    const next = new Set(selectedIds);
+    if (allInGroupSelected) {
+      groupIds.forEach(id => next.delete(id));
+    } else {
+      groupIds.forEach(id => next.add(id));
+    }
+    setSelectedIds(next);
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    
+    const confirmDelete = window.confirm(`ATENÇÃO: Você está prestes a excluir permanentemente ${selectedIds.size} ativos. Esta ação não pode ser desfeita. Deseja continuar?`);
+    if (!confirmDelete) return;
+
+    try {
+      const batch = writeBatch(db);
+      const ids = Array.from(selectedIds);
+      ids.forEach(id => {
+        batch.delete(doc(db, "assets", id));
+      });
+      await batch.commit();
+      toast.success(`${ids.length} ativos excluídos com sucesso!`);
+      setSelectedIds(new Set());
+    } catch (error) {
+      toast.error("Erro ao realizar exclusão em massa.");
+    }
+  };
+
+  const handleBulkActivate = async () => {
+    if (selectedIds.size === 0) return;
+    try {
+      const batch = writeBatch(db);
+      const now = new Date().toISOString();
+      const ids = Array.from(selectedIds);
+      for (const id of ids) {
+        const asset = assets.find(a => a.id === id);
+        if (!asset || asset.status === 'concluido') continue;
+        const assetRef = doc(db, "assets", id);
+        batch.update(assetRef, {
+          status: "concluido",
+          availabilityDate: new Date(bulkActivationData.availabilityDate).toISOString(),
+          residualValue: Number(bulkActivationData.residualValue) || 0,
+          updatedAt: now
+        });
+        const historyRef = doc(collection(db, "asset_status_history"));
+        batch.set(historyRef, {
+          assetId: id, assetName: asset.name, assetNumber: asset.assetNumber || "N/A", oldStatus: asset.status, newStatus: "concluido", changedBy: user?.name || "Sistema", changedAt: now, projectId: asset.projectId || null, notes: "Ativação Massiva"
+        });
+      }
+      await batch.commit();
+      toast.success(`${ids.length} ativos concluídos com sucesso!`);
+      setSelectedIds(new Set());
+      setBulkActivationOpen(false);
+    } catch (error) {
+      toast.error("Erro ao processar ativação em massa.");
+    }
+  };
+
+  const handleBulkClassUpdate = async () => {
+    if (selectedIds.size === 0 || !newBulkClass) return;
+    try {
+      const batch = writeBatch(db);
+      const selectedClass = assetClasses.find(c => c.name === newBulkClass);
+      const now = new Date().toISOString();
+      
+      const ids = Array.from(selectedIds);
+      ids.forEach(id => {
+        const assetRef = doc(db, "assets", id);
+        batch.update(assetRef, {
+          assetClass: newBulkClass,
+          usefulLife: selectedClass ? Number(selectedClass.usefulLife) : 0,
+          corporateUsefulLife: selectedClass ? Number(selectedClass.corporateUsefulLife) : 0,
+          accountingAccount: selectedClass ? selectedClass.assetAccountCode || "" : "",
+          depreciationAccountCode: selectedClass ? selectedClass.depreciationAccountCode || "" : "",
+          amortizationAccountCode: selectedClass ? selectedClass.amortizationAccountCode || "" : "",
+          resultAccountCode: selectedClass ? selectedClass.resultAccountCode || "" : "",
+          updatedAt: now
+        });
+      });
+      await batch.commit();
+      toast.success(`${ids.length} ativos atualizados com sucesso!`);
+      setSelectedIds(new Set());
+      setBulkClassUpdateOpen(false);
+    } catch (error) {
+      toast.error("Erro ao realizar atualização em massa.");
+    }
+  };
+
+  const handleAssetClassChange = (className: string) => {
+    const selectedClass = assetClasses?.find(c => c.name === className);
+    setFormData(prev => ({
+      ...prev,
+      assetClass: className,
+      usefulLife: selectedClass ? String(selectedClass.usefulLife) : "",
+      corporateUsefulLife: selectedClass ? String(selectedClass.corporateUsefulLife) : "",
+      accountingAccount: selectedClass ? selectedClass.assetAccountCode || "" : "",
+      depreciationAccountCode: selectedClass ? selectedClass.depreciationAccountCode || "" : "",
+      amortizationAccountCode: selectedClass ? selectedClass.amortizationAccountCode || "" : "",
+      resultAccountCode: selectedClass ? selectedClass.resultAccountCode || "" : "",
+    }));
+  };
+
+  const getAssetExpenses = (asset: any) => {
+    if (!expenses) return [];
+    return expenses.filter((expense: any) => String(expense.assetId) === String(asset.id));
+  };
+
+  const getAssetValue = (asset: any) => {
+    const items = getAssetExpenses(asset);
+    return items.reduce((acc: number, curr: any) => acc + Number(curr.amount || 0), Number(asset.value || 0));
+  };
+
+  const handleDownloadTemplate = () => {
+    const headers = [
+      "Número do Ativo",
+      "Plaqueta",
+      "Nome",
+      "Descrição",
+      "Valor",
+      "Quantidade",
+      "Data Início (DD/MM/AAAA)",
+      "Centro de Custo (Código)",
+      "Código da Classe",
+      "Nome da Obra"
+    ];
+    const example = [
+      "AT-001",
+      "PAT-1001",
+      "Betoneira 400L",
+      "Betoneira para obra",
+      "2500.00",
+      "1",
+      "04/03/2026",
+      "CC-001",
+      "3.01.01",
+      "Obra Residencial"
+    ];
+    
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([headers, example]);
+    ws['!cols'] = [{ wch: 15 }, { wch: 15 }, { wch: 30 }, { wch: 40 }, { wch: 15 }, { wch: 10 }, { wch: 15 }, { wch: 20 }, { wch: 25 }, { wch: 25 }];
+    
+    XLSX.utils.book_append_sheet(wb, ws, "Template Ativos");
+    XLSX.writeFile(wb, "template_importacao_ativos.xlsx");
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setIsImporting(true);
+    const reader = new FileReader();
+    setProcessedCount(0);
+
+    reader.onload = async (e) => {
+      let count = 0;
+      try {
+        const data = e.target?.result;
+        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const json = XLSX.utils.sheet_to_json(worksheet);
+
+        if (json.length === 0) {
+          toast.error("Arquivo vazio.");
+          setIsImporting(false);
+          return;
+        }
+        setTotalToImport(json.length);
+
+        let successCount = 0;
+        let skipCount = 0;
+
+        const promises = json.map(async (row: any, index: number) => {
+             const projectName = row["Nome da Obra"] ? String(row["Nome da Obra"]).trim() : "";
+             const project = projects.find(p => p.name?.trim().toLowerCase() === projectName.toLowerCase());
+             const projectId = project ? project.id : (filters.projectId !== "all" ? filters.projectId : "");
+
+             if (!projectId) {
+                 console.warn(`Linha ${index + 2}: Obra '${projectName}' não encontrada e nenhum filtro de obra selecionado.`);
+                 skipCount++;
+                 return;
+             }
+
+             const assetClassCode = row["Código da Classe"] ? String(row["Código da Classe"]).trim() : "";
+             let assetClass = "";
+             if (assetClassCode) {
+                 const found = assetClasses.find(c => String(c.code).trim() === assetClassCode);
+                 assetClass = found ? found.name : String(assetClassCode);
+             }
+
+             const parseDate = (val: any) => {
+                 if (!val) return new Date().toISOString();
+                 if (val instanceof Date) return val.toISOString();
+                 if (typeof val === 'string') {
+                     if (val.includes('/')) {
+                         const [day, month, year] = val.split('/');
+                         const d = new Date(`${year}-${month}-${day}`);
+                         if (!isNaN(d.getTime())) return d.toISOString();
+                     }
+                     const d = new Date(val);
+                     if (!isNaN(d.getTime())) return d.toISOString();
+                 }
+                 return new Date().toISOString();
+             };
+
+             const importedDate = parseDate(row["Data Início (DD/MM/AAAA)"]);
+             const payload = {
+                projectId,
+                assetNumber: row["Número do Ativo"] ? String(row["Número do Ativo"]) : "",
+                tagNumber: row["Plaqueta"] ? String(row["Plaqueta"]) : "",
+                name: row["Nome"] || "Ativo Importado",
+                description: row["Descrição"] || "",
+                value: row["Valor"] ? Number(row["Valor"]) : 0,
+                quantity: row["Quantidade"] ? Number(row["Quantidade"]) : 1,
+                startDate: importedDate,
+                availabilityDate: importedDate,
+                costCenter: row["Centro de Custo (Código)"] || "",
+                assetClass: assetClass,
+                status: "concluido", // Define o status como concluído para ativos importados
+                createdAt: new Date().toISOString()
+             };
+
+             await addDoc(collection(db, "assets"), payload);
+             successCount++;
+             count++;
+             setProcessedCount(count);
+             setImportProgress(Math.round((count / json.length) * 100));
+        });
+
+        await Promise.all(promises);
+        
+        if (successCount > 0) {
+          toast.success(`${successCount} ativos importados com sucesso!`);
+        }
+        if (skipCount > 0) {
+          toast.warning(`${skipCount} linhas foram ignoradas por não identificar a Obra. Verifique se o nome da obra na planilha coincide com o cadastro.`);
+        }
+      } catch (error) {
+        console.error(error);
+        toast.error("Erro ao processar arquivo.");
+      } finally {
+        setIsImporting(false);
+        setProcessedCount(0);
+        setImportProgress(0);
+        setTotalToImport(0);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const filteredAssets = assets?.filter(asset => {
+    const s = searchTerm.toLowerCase();
+    const matchesGlobal = !searchTerm || 
+      String(asset.name || "").toLowerCase().includes(s) ||
+      String(asset.assetNumber || "").toLowerCase().includes(s) ||
+      String(asset.tagNumber || "").toLowerCase().includes(s) ||
+      String(asset.description || "").toLowerCase().includes(s);
+
+    const matchesAssetNumber = !filters.assetNumber || String(asset.assetNumber || "").toLowerCase().includes(filters.assetNumber.toLowerCase());
+    const matchesTagNumber = !filters.tagNumber || String(asset.tagNumber || "").toLowerCase().includes(filters.tagNumber.toLowerCase());
+    const matchesDescription = !filters.description || String(asset.description || "").toLowerCase().includes(filters.description.toLowerCase());
+    const costCenterValue = typeof asset.costCenter === 'object' ? asset.costCenter?.code : asset.costCenter;
+    const matchesCostCenter = !filters.costCenter || String(costCenterValue || "").toLowerCase().includes(filters.costCenter.toLowerCase());
+    const matchesProject = filters.projectId === "all" || String(asset.projectId) === filters.projectId;
+    const matchesAssetClass = filters.assetClass === "all" || asset.assetClass === filters.assetClass;
+    const matchesStatus = filters.status === "all" || asset.status === filters.status;
+    return matchesGlobal && matchesAssetNumber && matchesTagNumber && matchesDescription && matchesCostCenter && matchesProject && matchesAssetClass && matchesStatus;
+  });
+
+  const groupedAssets = useMemo(() => {
+    if (!filteredAssets) return {};
+    const groups: Record<string, any[]> = {};
+    filteredAssets.forEach(asset => {
+      const groupName = formatCostCenter(asset.costCenter);
+      const finalGroupName = groupName === "—" ? "Sem Centro de Custo" : groupName;
+      if (!groups[finalGroupName]) groups[finalGroupName] = [];
+      groups[finalGroupName].push(asset);
+    });
+    return Object.keys(groups).sort().reduce((acc, key) => {
+        acc[key] = groups[key];
+        return acc;
+    }, {} as Record<string, any[]>);
+  }, [filteredAssets, costCenters]);
+
+  const [expandedCCs, setExpandedCCs] = useState<Record<string, boolean>>({});
+  const [importProgress, setImportProgress] = useState(0);
+  const [totalToImport, setTotalToImport] = useState(0);
+  const [processedCount, setProcessedCount] = useState(0);
+
+  const toggleCC = (cc: string) => {
+    setExpandedCCs(prev => ({ ...prev, [cc]: !prev[cc] }));
+  };
+
+  const toggleAllCCs = () => {
+    const allKeys = Object.keys(groupedAssets);
+    const allExpanded = allKeys.length > 0 && allKeys.every(cc => expandedCCs[cc]);
+    
+    if (allExpanded) {
+      setExpandedCCs({});
+    } else {
+      const newExpanded: Record<string, boolean> = {};
+      allKeys.forEach(cc => {
+        newExpanded[cc] = true;
+      });
+      setExpandedCCs(newExpanded);
+    }
+  };
+
+  const totalAssetsValue = filteredAssets?.reduce((acc, asset) => acc + getAssetValue(asset), 0) || 0;
+
+  const handleExportExcel = () => {
+    if (!filteredAssets || filteredAssets.length === 0) {
+      toast.error("Não há ativos para exportar.");
+      return;
+    }
+
+    const data = filteredAssets.map(asset => {
+      const project = projects?.find(p => String(p.id) === String(asset.projectId));
+      const ccDisplay = formatCostCenter(asset.costCenter);
+      
+      let effectiveClass = asset.assetClass || "";
+      if (asset.status === 'planejamento' || asset.status === 'em_desenvolvimento') {
+        effectiveClass = "Imobilizado em andamento";
+      }
+
+      return {
+        "Número do Ativo": asset.assetNumber || "",
+        "Plaqueta": asset.tagNumber || "",
+        "Nome": asset.name || "",
+        "Descrição": asset.description || "",
+        "Valor Original": asset.value ? Number(asset.value) : 0,
+        "Quantidade": asset.quantity ? Number(asset.quantity) : 1,
+        "Data Início": asset.startDate ? new Date(asset.startDate).toLocaleDateString('pt-BR') : "",
+        "Status": asset.status ? asset.status.replace('_', ' ') : "",
+        "Obra": project?.name || "",
+        "Centro de Custo": ccDisplay,
+        "Classe do Ativo": effectiveClass,
+        "Vida Útil (Fiscal)": asset.usefulLife || "",
+        "Vida Útil (Societária)": asset.corporateUsefulLife || "",
+        "Conta Contábil": asset.accountingAccount || "",
+        "Conta Depreciação": asset.depreciationAccountCode || "",
+        "Conta Amortização": asset.amortizationAccountCode || "",
+        "Conta Resultado": asset.resultAccountCode || "",
+        "Notas": asset.notes || ""
+      };
+    });
+
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wscols = Object.keys(data[0]).map(key => ({ wch: Math.max(key.length, 15) }));
+    ws['!cols'] = wscols;
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Ativos");
+    XLSX.writeFile(wb, `ativos_em_andamento_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Relatório exportado com sucesso!");
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-3xl font-bold text-slate-700">Cadastro de Ativos</h1>
+        
+        <div className="flex gap-2">
+            {selectedIds.size > 0 && (
+              <>
+                <Button variant="destructive" onClick={handleBulkDelete}>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Excluir Selecionados ({selectedIds.size})
+                </Button>
+                <Button className="bg-green-600 hover:bg-green-700" onClick={() => setBulkActivationOpen(true)}>
+                  <CheckCircle className="mr-2 h-4 w-4" />
+                  Concluir Selecionados ({selectedIds.size})
+                </Button>
+                <Button variant="outline" className="border-blue-600 text-blue-600 hover:bg-blue-50" onClick={() => setBulkClassUpdateOpen(true)}>
+                  <ArrowRightLeft className="mr-2 h-4 w-4" />
+                  Alterar Classe ({selectedIds.size})
+                </Button>
+              </>
+            )}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline">
+                  <Filter className="mr-2 h-4 w-4" />
+                  Filtros
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-80 p-4" align="end">
+                <div className="space-y-4">
+                  <h4 className="font-medium leading-none">Filtros de Ativos</h4>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Obra</label>
+                    <Select value={filters.projectId} onValueChange={(v) => setFilters(prev => ({ ...prev, projectId: v }))}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Todas as obras" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todas as Obras</SelectItem>
+                        {projects?.map((p) => (
+                          <SelectItem key={p.id} value={p.id.toString()}>
+                            {p.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Classe do Ativo</label>
+                    <Select value={filters.assetClass} onValueChange={(v) => setFilters(prev => ({ ...prev, assetClass: v }))}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Todas as classes" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todas as Classes</SelectItem>
+                        {assetClasses?.map((c) => (
+                          <SelectItem key={c.id} value={c.name}>
+                            {c.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Status</label>
+                    <Select value={filters.status} onValueChange={(v) => setFilters(prev => ({ ...prev, status: v }))}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Todos os status" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">Todos</SelectItem>
+                        <SelectItem value="planejamento">Planejamento</SelectItem>
+                        <SelectItem value="em_desenvolvimento">Em Desenvolvimento</SelectItem>
+                        <SelectItem value="concluido">Concluído</SelectItem>
+                        <SelectItem value="parado">Parado</SelectItem>
+                        <SelectItem value="baixado">Baixado</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Número do Ativo</label>
+                    <Input 
+                      placeholder="Filtrar..." 
+                      value={filters.assetNumber}
+                      onChange={(e) => setFilters(prev => ({ ...prev, assetNumber: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Nº Plaqueta</label>
+                    <Input 
+                      placeholder="Filtrar..." 
+                      value={filters.tagNumber}
+                      onChange={(e) => setFilters(prev => ({ ...prev, tagNumber: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Descrição</label>
+                    <Input 
+                      placeholder="Filtrar..." 
+                      value={filters.description}
+                      onChange={(e) => setFilters(prev => ({ ...prev, description: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Centro de Custo</label>
+                    <Input 
+                      placeholder="Filtrar..." 
+                      value={filters.costCenter}
+                      onChange={(e) => setFilters(prev => ({ ...prev, costCenter: e.target.value }))}
+                    />
+                  </div>
+                  <Button 
+                      variant="ghost" 
+                      className="w-full text-red-600 hover:text-red-700 hover:bg-red-50"
+                      onClick={() => setFilters({
+                          assetNumber: "",
+                          tagNumber: "",
+                          description: "",
+                          costCenter: "",
+                          projectId: "all",
+                          assetClass: "all",
+                          status: "all",
+                      })}
+                  >
+                      Limpar Filtros
+                  </Button>
+                </div>
+              </PopoverContent>
+            </Popover>
+            <Link href="/asset-movements">
+              <Button variant="outline">
+                <ArrowRightLeft className="mr-2 h-4 w-4" />
+                Movimentações
+              </Button>
+            </Link>
+            <Button variant="outline" onClick={toggleAllCCs} className="min-w-[150px]">
+                {Object.keys(groupedAssets).length > 0 && Object.keys(groupedAssets).every(cc => expandedCCs[cc]) ? (
+                  <>
+                    <ChevronRight className="mr-2 h-4 w-4" /> Recolher Tudo
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="mr-2 h-4 w-4" /> Expandir Tudo
+                  </>
+                )}
+            </Button>
+            <Button variant="outline" onClick={handleExportExcel}>
+                <Download className="mr-2 h-4 w-4" />
+                Exportar Excel
+            </Button>
+            <Button variant="outline" onClick={handleDownloadTemplate}>
+                <Download className="mr-2 h-4 w-4" />
+                Template
+            </Button>
+            <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={isImporting}>
+                {isImporting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+                Importar
+            </Button>
+            <Input
+                type="file"
+                ref={fileInputRef}
+                className="hidden"
+                onChange={handleFileUpload}
+                accept=".xlsx, .xls"
+            />
+            {isImporting && (
+              <div className="w-full mt-4">
+                <div className="flex justify-between text-sm text-muted-foreground mb-1">
+                  <span>Importando... ({importProgress}%)</span>
+                  <span>{processedCount}/{totalToImport}</span>
+                </div>
+                <Progress value={importProgress} className="h-2" />
+              </div>
+            )}
+
+        {/* Diálogo de Ativação (CPC 27) */}
+        <Dialog open={activationOpen} onOpenChange={setActivationOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <CheckCircle className="text-green-600" />
+                Ativação de Imobilizado
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="bg-yellow-50 p-3 rounded-md border border-yellow-200 text-sm text-yellow-800">
+                <strong>Atenção (CPC 27):</strong> Ao ativar este ativo, a depreciação será iniciada com base na data de disponibilidade informada abaixo. Custos posteriores serão considerados despesas do período.
+              </div>
+              <div>
+                <label className="text-sm font-medium">Data de Disponibilidade para Uso</label>
+                <Input 
+                  type="date" 
+                  value={activationData.availabilityDate}
+                  onChange={(e) => setActivationData({...activationData, availabilityDate: e.target.value})}
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium">Valor Residual Estimado (R$)</label>
+                <Input 
+                  type="number" 
+                  value={activationData.residualValue}
+                  onChange={(e) => setActivationData({...activationData, residualValue: e.target.value})}
+                />
+              </div>
+              <Button onClick={handleActivationSubmit} className="w-full bg-green-600 hover:bg-green-700">Confirmar Ativação</Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Diálogo de Ativação em Massa */}
+        <Dialog open={bulkActivationOpen} onOpenChange={setBulkActivationOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2"><CheckCircle className="text-green-600" />Conclusão em Massa ({selectedIds.size} ativos)</DialogTitle>
+              <DialogDescription>Informe os dados para ativação conjunta dos ativos selecionados.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div>
+                <label className="text-sm font-medium">Data de Disponibilidade para Uso</label>
+                <Input type="date" value={bulkActivationData.availabilityDate} onChange={(e) => setBulkActivationData({...bulkActivationData, availabilityDate: e.target.value})} />
+              </div>
+              <div>
+                <label className="text-sm font-medium">Valor Residual Estimado (R$)</label>
+                <Input type="number" value={bulkActivationData.residualValue} onChange={(e) => setBulkActivationData({...bulkActivationData, residualValue: e.target.value})} />
+              </div>
+              <Button onClick={handleBulkActivate} className="w-full bg-green-600 hover:bg-green-700">Confirmar Conclusão em Massa</Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Diálogo de Alteração de Classe em Massa */}
+        <Dialog open={bulkClassUpdateOpen} onOpenChange={setBulkClassUpdateOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2"><ArrowRightLeft className="text-blue-600" />Alterar Classe em Massa ({selectedIds.size} ativos)</DialogTitle>
+              <DialogDescription>Selecione a nova classe para aplicar aos ativos selecionados. Isso atualizará também os parâmetros de vida útil e contas contábeis.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div>
+                <label className="text-sm font-medium">Nova Classe do Imobilizado</label>
+                <Select value={newBulkClass} onValueChange={setNewBulkClass}>
+                  <SelectTrigger><SelectValue placeholder="Selecione a classe..." /></SelectTrigger>
+                  <SelectContent>{assetClasses?.map(c => <SelectItem key={c.id} value={c.name}>{c.name}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <Button onClick={handleBulkClassUpdate} className="w-full bg-blue-600 hover:bg-blue-700" disabled={!newBulkClass}>Confirmar Alteração</Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Diálogo de Visualização de Detalhes */}
+        <Dialog open={viewOpen} onOpenChange={setViewOpen}>
+          <DialogContent className="w-[98vw] max-w-[98vw] h-[98vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Detalhes do Ativo</DialogTitle>
+            </DialogHeader>
+            {viewingAsset && (
+              <div className="w-full mt-4 space-y-6">
+                <div className="bg-slate-50 rounded-lg border">
+                  <div 
+                    className={`bg-slate-200 px-6 py-3 rounded-t-lg flex justify-between items-center cursor-pointer ${expandedSections.details ? 'border-b' : ''}`}
+                    onClick={() => toggleSection('details')}
+                  >
+                    <h3 className="text-xl font-semibold">Detalhes Gerais</h3>
+                    {expandedSections.details ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+                  </div>
+                  {expandedSections.details && (
+                  (() => {
+                    const totalAssetValue = getAssetValue(viewingAsset);
+                    const normalize = (str: string) => str?.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "") || "";
+                    
+                    const assetClassDef = assetClasses?.find(c => normalize(c.name) === normalize(viewingAsset.assetClass));
+                    const effectiveUsefulLife = Number(viewingAsset.usefulLife) || Number(assetClassDef?.usefulLife) || 0;
+                    const effectiveCorporateLife = Number(viewingAsset.corporateUsefulLife) || Number(assetClassDef?.corporateUsefulLife) || 0;
+
+                    const calculateDepreciation = (life: any, useStored = false) => {
+                      const years = Number(life || 0);
+                      const assetDate = getLocalDateFromISO(viewingAsset.startDate);
+                      if (years <= 0 || !assetDate) return { monthly: 0, accumulated: 0, residual: totalAssetValue, monthsAccumulated: 0, totalMonths: 0 };
+                      const totalMonths = years * 12;
+                      const monthly = totalAssetValue / totalMonths;
+                      
+                      let accumulated = 0;
+                      let monthsAccumulated = 0;
+
+                      if (useStored && viewingAsset.accumulatedDepreciation !== undefined && viewingAsset.accumulatedDepreciation !== null) {
+                          accumulated = Number(viewingAsset.accumulatedDepreciation);
+                          monthsAccumulated = monthly > 0 ? Math.round(accumulated / monthly) : 0;
+                      } else {
+                          const start = new Date(assetDate.getFullYear(), assetDate.getMonth() + 1, 1);
+                          const now = new Date();
+                          let months = (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
+                          if (months < 0) months = 0;
+                          accumulated = Math.min(months * monthly, totalAssetValue);
+                          monthsAccumulated = Math.min(months, totalMonths);
+                      }
+
+                      const residual = totalAssetValue - accumulated;
+                      return { monthly, accumulated, residual, monthsAccumulated, totalMonths };
+                    };
+                    const fiscal = calculateDepreciation(effectiveUsefulLife, true);
+                    const corporate = calculateDepreciation(effectiveCorporateLife, false);
+                    return (
+                  <div className="p-6 grid grid-cols-9 gap-6">
+                <div className="col-span-1 space-y-1">
+                  <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Número do Ativo</label>
+                  <p className="text-base font-medium">{viewingAsset.assetNumber || "-"}</p>
+                </div>
+                <div className="col-span-1 space-y-1">
+                  <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Nº de Plaqueta</label>
+                  <p className="text-base font-medium">{viewingAsset.tagNumber || "-"}</p>
+                </div>
+                <div className="col-span-1 space-y-1">
+                  <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Data Início</label>
+                  <p className="text-base">
+                    {(() => {
+                        const d = getLocalDateFromISO(viewingAsset.startDate);
+                        return d ? d.toLocaleDateString("pt-BR") : "-";
+                    })()}
+                  </p>
+                </div>
+                <div className="col-span-1 space-y-1">
+                  <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Status</label>
+                  <div className="inline-flex items-center px-2.5 py-0.5 rounded-full text-sm font-medium bg-blue-100 text-blue-800 capitalize">
+                    {viewingAsset.status?.replace('_', ' ')}
+                  </div>
+                </div>
+                <div className="col-span-1 space-y-1">
+                  <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Classe</label>
+                  <p className="text-base">
+                    {(viewingAsset.status === 'planejamento' || viewingAsset.status === 'em_desenvolvimento') 
+                      ? "Imobilizado em andamento" 
+                      : (viewingAsset.assetClass || "-")}
+                  </p>
+                </div>
+                <div className="col-span-1 space-y-1">
+                  <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Conta Contábil</label>
+                  <p className="text-base">{viewingAsset.accountingAccount || "-"}</p>
+                </div>
+                <div className="col-span-1 space-y-1">
+                  <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Vida Útil</label>
+                  <p className="text-base">{effectiveUsefulLife ? `${effectiveUsefulLife} anos` : "-"}</p>
+                </div>
+                <div className="col-span-1 space-y-1">
+                  <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Vida Societária</label>
+                  <p className="text-base">{effectiveCorporateLife ? `${effectiveCorporateLife} anos` : "-"}</p>
+                </div>
+                <div className="col-span-1 space-y-1">
+                  <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Centro de Custo</label>
+                  <p className="text-base">
+                    {formatCostCenter(viewingAsset.costCenter)}
+                  </p>
+                </div>
+                <div className="col-span-7 space-y-1">
+                  <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Descrição</label>
+                  <p className="text-base text-gray-700">{viewingAsset.description || "-"}</p>
+                </div>
+                <div className="col-span-2 space-y-1 text-right">
+                  <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Total Acumulado (Composição)</label>
+                  <p className="text-base font-medium">
+                    {totalAssetValue 
+                      ? `R$ ${totalAssetValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` 
+                      : "-"}
+                  </p>
+                </div>
+
+                <div className="col-span-9 grid grid-cols-2 gap-6">
+                {/* Cenário Fiscal */}
+                <div className="mt-2 bg-white p-4 rounded border">
+                    <h4 className="font-medium text-base text-gray-900 border-b pb-2 mb-3 flex justify-between items-center">
+                        <span>Cenário Fiscal ({effectiveUsefulLife} anos)</span>
+                        <span className="text-xs text-muted-foreground font-normal">
+                            {effectiveUsefulLife > 0 ? (
+                                `${effectiveUsefulLife} * 12 = ${effectiveUsefulLife * 12} meses | R$ ${totalAssetValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / ${effectiveUsefulLife * 12} = R$ ${fiscal.monthly.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                            ) : (
+                                "Vida útil não definida"
+                            )}
+                        </span>
+                    </h4>
+                    <div className="grid grid-cols-3 gap-4">
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Deprec. Mês</label>
+                            <p className="text-base font-medium">R$ {fiscal.monthly.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                              Deprec. Acum. <span className="normal-case text-xs ml-1">({fiscal.monthsAccumulated}/{fiscal.totalMonths})</span>
+                            </label>
+                            <p className="text-base font-medium">
+                              R$ {fiscal.accumulated.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                            </p>
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Valor Residual</label>
+                            <p className="text-lg font-bold text-blue-700">R$ {fiscal.residual.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Cenário Societário */}
+                <div className="mt-2 bg-white p-4 rounded border">
+                    <h4 className="font-medium text-base text-gray-900 border-b pb-2 mb-3 flex justify-between items-center">
+                        <span>Cenário Societário ({effectiveCorporateLife} anos)</span>
+                        <span className="text-xs text-muted-foreground font-normal">
+                            {effectiveCorporateLife > 0 ? (
+                                `${effectiveCorporateLife} * 12 = ${effectiveCorporateLife * 12} meses | R$ ${totalAssetValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / ${effectiveCorporateLife * 12} = R$ ${corporate.monthly.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                            ) : (
+                                "Vida útil não definida"
+                            )}
+                        </span>
+                    </h4>
+                    <div className="grid grid-cols-3 gap-4">
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Deprec. Mês</label>
+                            <p className="text-base font-medium">R$ {corporate.monthly.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                              Deprec. Acum. <span className="normal-case text-xs ml-1">({corporate.monthsAccumulated}/{corporate.totalMonths})</span>
+                            </label>
+                            <p className="text-base font-medium">
+                              R$ {corporate.accumulated.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                            </p>
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Valor Residual</label>
+                            <p className="text-lg font-bold text-green-700">R$ {corporate.residual.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
+                        </div>
+                    </div>
+                </div>
+                </div>
+
+                {viewingAsset && (viewingAsset.photo1 || viewingAsset.photo2) && (
+                  <div className="col-span-9 space-y-2 mt-4">
+                    <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Evidências Fotográficas (Último Inventário)</label>
+                    <div className="flex gap-4">
+                      {[viewingAsset.photo1, viewingAsset.photo2].map((photo, idx) => photo ? (
+                        <Dialog key={idx}>
+                          <DialogTrigger asChild>
+                            <div className="relative group cursor-zoom-in w-48 h-32 rounded-lg border overflow-hidden shadow-sm hover:shadow-md transition-all bg-slate-100">
+                              <img src={photo} className="w-full h-full object-cover" />
+                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 flex items-center justify-center transition-colors">
+                                <Eye className="text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                              </div>
+                            </div>
+                          </DialogTrigger>
+                          <DialogContent className="max-w-4xl">
+                            <img src={photo} className="w-full rounded-lg" alt={`Foto ${idx + 1}`} />
+                          </DialogContent>
+                        </Dialog>
+                      ) : null)}
+                    </div>
+                  </div>
+                )}
+
+                  </div>
+                    );
+                  })()
+                  )}
+                </div>
+                <div className="bg-slate-50 rounded-lg border">
+                  <div 
+                    className={`bg-slate-200 px-6 py-3 rounded-t-lg flex justify-between items-center cursor-pointer ${expandedSections.composition ? 'border-b' : ''}`}
+                    onClick={() => toggleSection('composition')}
+                  >
+                    <h3 className="text-xl font-semibold">Composição (Despesas)</h3>
+                    {expandedSections.composition ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+                  </div>
+                  {expandedSections.composition && (
+                  <div className="p-6 space-y-4">
+                    <div className="rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="text-base">Descrição da Despesa</TableHead>
+                            <TableHead className="text-base">Obra</TableHead>
+                            <TableHead className="text-base">Nota Fiscal</TableHead>
+                            <TableHead className="text-base text-center">Itens</TableHead>
+                            <TableHead className="text-right text-base">Valor</TableHead>
+                            <TableHead className="text-right text-base">Ações</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {Number(viewingAsset.value) > 0 && (
+                            <TableRow className="bg-slate-50/50">
+                              <TableCell className="text-base font-medium text-slate-700">Valor Original (Cadastro)</TableCell>
+                              <TableCell className="text-base text-muted-foreground">-</TableCell>
+                              <TableCell className="text-base text-muted-foreground">-</TableCell>
+                              <TableCell className="text-base text-center">-</TableCell>
+                              <TableCell className="text-right text-base font-medium">
+                                R$ {Number(viewingAsset.value).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <span className="text-xs text-muted-foreground bg-slate-100 px-2 py-1 rounded border">Saldo Inicial</span>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                          {getAssetExpenses(viewingAsset).map((item: any) => (
+                            <TableRow key={item.id}>
+                              <TableCell className="text-base">{item.description || "Sem descrição"}</TableCell>
+                              <TableCell className="text-base">{projects?.find(p => String(p.id) === String(item.projectId))?.name || "-"}</TableCell>
+                              <TableCell className="text-base font-mono text-muted-foreground">
+                                {
+                                  item.notes?.match(/NF-e:\s*(\d{44})/)?.[1] || 
+                                  "-"
+                                }
+                              </TableCell>
+                              <TableCell className="text-base text-center">
+                                {(item.items && item.items.length > 0) || (item.notes && item.notes.includes("Itens da Nota:")) ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-6 w-6 p-0"
+                                    onClick={() => setViewItemsExpense(item)}
+                                  >
+                                    <Eye size={14} className="text-blue-600" />
+                                  </Button>
+                                ) : "-"}
+                              </TableCell>
+                              <TableCell className="text-right text-base">
+                                R$ {Number(item.amount || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <Button 
+                                  variant="ghost" 
+                                  size="icon" 
+                                  className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50"
+                                  onClick={() => handleUnlinkItem(item.id)}
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                          {Number(viewingAsset.value) <= 0 && getAssetExpenses(viewingAsset).length === 0 && (
+                            <TableRow>
+                              <TableCell colSpan={6} className="text-center text-base text-muted-foreground py-6">
+                                Nenhuma despesa vinculada a este ativo.
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </TableBody>
+                        <tfoot className="bg-slate-50 font-medium">
+                          <TableRow>
+                            <TableCell colSpan={4} className="text-base">Total Acumulado</TableCell>
+                            <TableCell className="text-right text-base" colSpan={2}>
+                              R$ {getAssetValue(viewingAsset).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </TableCell>
+                          </TableRow>
+                        </tfoot>
+                      </Table>
+                    </div>
+                  </div>
+                  )}
+                </div>
+                <div className="bg-slate-50 rounded-lg border">
+                  <div 
+                    className={`bg-slate-200 px-6 py-3 rounded-t-lg flex justify-between items-center cursor-pointer ${expandedSections.calculations ? 'border-b' : ''}`}
+                    onClick={() => toggleSection('calculations')}
+                  >
+                    <h3 className="text-xl font-semibold">Cálculos</h3>
+                    {expandedSections.calculations ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+                  </div>
+                  {expandedSections.calculations && (
+                  <div className="p-6">
+                    {(() => {
+                      const totalValue = getAssetValue(viewingAsset);
+                      const normalize = (str: string) => str?.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "") || "";
+                      const assetClassDef = assetClasses?.find(c => normalize(c.name) === normalize(viewingAsset.assetClass));
+                      const fiscalLife = Number(viewingAsset.usefulLife) || Number(assetClassDef?.usefulLife) || 0;
+                      const corporateLife = Number(viewingAsset.corporateUsefulLife) || Number(assetClassDef?.corporateUsefulLife) || 0;
+
+                      const startDate = getLocalDateFromISO(viewingAsset.startDate);
+                      const currentYear = new Date().getFullYear();
+                      
+                      if (!startDate || totalValue <= 0) {
+                        return <p className="text-muted-foreground text-center">Dados insuficientes para cálculo de depreciação (Valor ou Data Início ausentes).</p>;
+                      }
+
+                      const calculateScenario = (years: number) => {
+                        if (years <= 0) return null;
+
+                        const monthlyDepreciation = totalValue / (years * 12);
+                        let accumulatedDepreciation = 0;
+                        
+                        const effectiveStart = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 1);
+                        const startYear = effectiveStart.getFullYear();
+                        const startMonth = effectiveStart.getMonth();
+                        
+                        const monthsPrior = (currentYear - startYear) * 12 - startMonth;
+                        
+                        if (monthsPrior > 0) {
+                          const effectiveMonthsPrior = Math.min(monthsPrior, years * 12);
+                          accumulatedDepreciation = effectiveMonthsPrior * monthlyDepreciation;
+                        }
+
+                        return {
+                          monthlyDepreciation,
+                          rows: Array.from({ length: 12 }, (_, i) => {
+                            const monthDate = new Date(currentYear, i, 1);
+                            const monthsSinceStart = (currentYear - startYear) * 12 + (i - startMonth);
+                            const isWithinUsefulLife = monthsSinceStart >= 0 && monthsSinceStart < (years * 12);
+
+                            const monthlyVal = isWithinUsefulLife ? monthlyDepreciation : 0;
+                            const initialBalance = accumulatedDepreciation;
+                            
+                            if (isWithinUsefulLife) {
+                                accumulatedDepreciation += monthlyVal;
+                            }
+                            
+                            if (accumulatedDepreciation > totalValue) {
+                                accumulatedDepreciation = totalValue;
+                            }
+
+                            let isDepreciated = false;
+                            if (viewingAsset.lastDepreciationDate) {
+                                const lastRun = getLocalDateFromISO(viewingAsset.lastDepreciationDate);
+                                if (lastRun) {
+                                const rowYearMonth = currentYear * 12 + i;
+                                const lastRunYearMonth = lastRun.getFullYear() * 12 + lastRun.getMonth();
+                                if (rowYearMonth <= lastRunYearMonth) isDepreciated = true;
+                                }
+                            }
+                            
+                            return {
+                              month: monthDate.toLocaleString('pt-BR', { month: 'long' }),
+                              initial: initialBalance,
+                              monthly: monthlyVal,
+                              final: accumulatedDepreciation,
+                              isDepreciated
+                            };
+                          })
+                        };
+                      };
+
+                      const fiscalData = calculateScenario(fiscalLife);
+                      const corporateData = calculateScenario(corporateLife);
+
+                      const renderTable = (title: string, data: any, years: number) => {
+                        if (!data) return (
+                          <div className="border rounded-md p-8 text-center h-full flex flex-col items-center justify-center bg-slate-50">
+                            <h4 className="font-medium mb-2 text-lg">{title}</h4>
+                            <p className="text-base text-muted-foreground">Vida útil não definida.</p>
+                          </div>
+                        );
+
+                        return (
+                          <div className="space-y-4">
+                            <div className="flex flex-col gap-1 mb-4">
+                              <h4 className="font-medium text-xl">{title}</h4>
+                              <div className="text-base text-muted-foreground">
+                                Vida Útil: {years} anos | Deprec. Mensal: <strong>R$ {data.monthlyDepreciation.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                              </div>
+                            </div>
+                            <div className="rounded-md border">
+                              <Table>
+                                <TableHeader>
+                                  <TableRow>
+                                    <TableHead className="text-sm">Mês</TableHead>
+                                    <TableHead className="text-right text-sm">Saldo Inicial</TableHead>
+                                    <TableHead className="text-right text-sm">Deprec.</TableHead>
+                                    <TableHead className="text-right text-sm">Saldo Final</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {data.rows.map((row: any, index: number) => (
+                                    <TableRow key={index} className={row.isDepreciated ? "bg-green-200 font-bold mb-6 hover:bg-green-300" : ""}>
+                                      <TableCell className="capitalize text-sm">{row.month}</TableCell>
+                                      <TableCell className="text-right text-sm">R$ {row.initial.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
+                                      <TableCell className="text-right text-sm">R$ {row.monthly.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
+                                      <TableCell className="text-right text-sm">R$ {row.final.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </div>
+                          </div>
+                        );
+                      };
+
+                      return (
+                        <div>
+                           <h3 className="text-xl font-semibold mb-6">Demonstrativo de Depreciação ({currentYear})</h3>
+                           <div className="grid grid-cols-2 gap-8">
+                              {renderTable("Cenário Fiscal", fiscalData, fiscalLife)}
+                              {renderTable("Cenário Societário", corporateData, corporateLife)}
+                           </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Modal de Visualização de Itens */}
+        <Dialog open={!!viewItemsExpense} onOpenChange={(open) => !open && setViewItemsExpense(null)}>
+          <DialogContent className="max-w-4xl">
+            <DialogHeader>
+              <DialogTitle>Itens da Despesa: {viewItemsExpense?.description}</DialogTitle>
+              {viewItemsExpense?.invoiceNumber && (
+                <DialogDescription>
+                  Nota Fiscal: <span className="font-mono font-medium text-slate-700">{viewItemsExpense.invoiceNumber}</span>
+                </DialogDescription>
+              )}
+            </DialogHeader>
+            <div className="mt-4 max-h-[60vh] overflow-y-auto">
+              {viewItemsExpense?.items && viewItemsExpense.items.length > 0 ? (
+                <div className="border rounded-md overflow-x-auto bg-white">
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-slate-100 font-medium text-slate-600 border-b">
+                      <tr>
+                        <th className="px-2 py-1 whitespace-nowrap">CÓDIGO PRODUTO</th>
+                        <th className="px-2 py-1">DESCRIÇÃO DO PRODUTO / SERVIÇO</th>
+                        <th className="px-2 py-1 whitespace-nowrap">NCM/SH</th>
+                        <th className="px-2 py-1 whitespace-nowrap">O/CST</th>
+                        <th className="px-2 py-1 whitespace-nowrap">CFOP</th>
+                        <th className="px-2 py-1 whitespace-nowrap">UN</th>
+                        <th className="px-2 py-1 text-right whitespace-nowrap">QUANT</th>
+                        <th className="px-2 py-1 text-right whitespace-nowrap">VALOR UNIT</th>
+                        <th className="px-2 py-1 text-right whitespace-nowrap">VALOR TOTAL</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {viewItemsExpense.items.map((prod: any, idx: number) => (
+                        <tr key={idx} className="hover:bg-slate-50">
+                          <td className="px-2 py-1 font-mono">{prod.code}</td>
+                          <td className="px-2 py-1">{prod.description}</td>
+                          <td className="px-2 py-1">{prod.ncm}</td>
+                          <td className="px-2 py-1">{prod.orig}/{prod.cst}</td>
+                          <td className="px-2 py-1">{prod.cfop}</td>
+                          <td className="px-2 py-1">{prod.unit}</td>
+                          <td className="px-2 py-1 text-right">{prod.quantity}</td>
+                          <td className="px-2 py-1 text-right">{Number(prod.unitPrice).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                          <td className="px-2 py-1 text-right font-medium">{Number(prod.totalPrice).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="bg-slate-50 p-4 rounded-md text-sm whitespace-pre-wrap font-mono text-slate-600 border">
+                  {viewItemsExpense?.notes?.split("Itens da Nota:")[1]?.trim() || "Nenhum item detalhado encontrado."}
+                </div>
+              )}
+            </div>
+            <DialogFooter>
+              <Button onClick={() => setViewItemsExpense(null)}>Fechar</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        </div>
+        <Sheet open={open} onOpenChange={(isOpen) => {
+          setOpen(isOpen);
+          if (!isOpen) {
+            setFormData({ projectId: filters.projectId !== "all" ? filters.projectId : "", assetNumber: "", name: "", description: "", tagNumber: "", value: "", quantity: "1", startDate: new Date().toISOString().split("T")[0], notes: "", accountingAccount: "", assetClass: "", usefulLife: "", corporateUsefulLife: "", depreciationAccountCode: "", amortizationAccountCode: "", resultAccountCode: "", costCenter: "" });
+            setEditingId(null);
+          }
+        }}>
+          <SheetTrigger asChild>
+            <Button className="gap-2">
+              <Plus size={20} />
+              Novo Ativo
+            </Button>
+          </SheetTrigger>
+          <SheetContent className="min-w-[60vw] overflow-y-auto">
+            <SheetHeader>
+              <SheetTitle>{editingId ? "Editar Ativo" : "Registrar Novo Ativo"}</SheetTitle>
+            </SheetHeader>
+            <form onSubmit={handleSubmit} className="space-y-4 pl-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm font-medium">Número do Ativo</label>
+                  <Input
+                    value={formData.assetNumber}
+                    readOnly
+                    className="bg-slate-100 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Nº de plaqueta</label>
+                  <Input
+                    value={formData.tagNumber}
+                    onChange={(e) => setFormData({ ...formData, tagNumber: e.target.value })}
+                    placeholder="Ex: PAT-00123"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-sm font-medium">Obra</label>
+                <Select value={formData.projectId} onValueChange={(v) => setFormData({ ...formData, projectId: v })}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione uma obra" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {projects?.map((p) => (
+                      <SelectItem key={p.id} value={p.id.toString()}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="text-sm font-medium">Nome do Ativo</label>
+                <Input
+                  required
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  placeholder="Ex: Equipamento de Escavação"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium">Descrição</label>
+                <Textarea
+                  value={formData.description}
+                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  placeholder="Descrição do ativo..."
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm font-medium">Valor (R$)</label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={formData.value}
+                    onChange={(e) => setFormData({ ...formData, value: e.target.value })}
+                    placeholder="0,00"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium">Quantidade</label>
+                  <Input
+                    type="number"
+                    step="any"
+                    min="0"
+                    value={formData.quantity}
+                    onChange={(e) => setFormData({ ...formData, quantity: e.target.value })}
+                    placeholder="1"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-sm font-medium">Centro de Custo</label>
+                <Select value={formData.costCenter} onValueChange={(v) => setFormData({ ...formData, costCenter: v })}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione o centro de custo" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {costCenters?.map((cc: any) => (
+                      <SelectItem key={cc.id} value={cc.code}>
+                        {cc.code} - {cc.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="border rounded-md p-4 bg-slate-50 space-y-4">
+                <h4 className="font-medium text-sm text-gray-700 border-b pb-2">Dados Contábeis</h4>
+                <div className="grid grid-cols-8 gap-4">
+                  <div className="col-span-2">
+                    <label className="text-sm font-medium">Classe do Imobilizado</label>
+                    <Select value={formData.assetClass} onValueChange={handleAssetClassChange}>
+                      <SelectTrigger><SelectValue placeholder="Selecione a classe..." /></SelectTrigger>
+                      <SelectContent>{assetClasses?.map(c => <SelectItem key={c.id} value={c.name}>{c.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                  <div className="col-span-1">
+                    <label className="text-sm font-medium">Vida Físcal</label>
+                    <Input
+                      type="number"
+                      value={formData.usefulLife}
+                      readOnly
+                      className="bg-slate-100"
+                    />
+                  </div>
+                  <div className="col-span-1">
+                    <label className="text-sm font-medium">Vida Societária</label>
+                    <Input
+                      type="number"
+                      value={formData.corporateUsefulLife}
+                      readOnly
+                      className="bg-slate-100"
+                    />
+                  </div>
+                  <div className="col-span-1">
+                    <label className="text-sm font-medium">Conta Custo</label>
+                      <Input
+                        value={formData.accountingAccount}
+                        readOnly
+                        className="bg-slate-100"
+                      />
+                  </div>
+                  <div className="col-span-1">
+                    <label className="text-sm font-medium">Conta Deprec.</label>
+                      <Input
+                        value={formData.depreciationAccountCode}
+                        readOnly
+                        className="bg-slate-100"
+                      />
+                  </div>
+                  <div className="col-span-1">
+                    <label className="text-sm font-medium">Conta Amort.</label>
+                      <Input
+                        value={formData.amortizationAccountCode}
+                        readOnly
+                        className="bg-slate-100"
+                      />
+                  </div>
+                  <div className="col-span-1">
+                    <label className="text-sm font-medium">Conta Result.</label>
+                      <Input
+                        value={formData.resultAccountCode}
+                        readOnly
+                        className="bg-slate-100"
+                      />
+                </div>
+              </div>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium">Data de Início</label>
+                <Input
+                  type="date"
+                  required
+                  value={formData.startDate}
+                  onChange={(e) => setFormData({ ...formData, startDate: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium">Notas</label>
+                <Textarea
+                  value={formData.notes}
+                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+                  placeholder="Observações adicionais..."
+                />
+              </div>
+              <Button type="submit" className="w-full">
+                {editingId ? "Salvar Alterações" : "Registrar Ativo"}
+              </Button>
+            </form>
+          </SheetContent>
+        </Sheet>
+      </div>
+
+      <div className="flex items-center gap-4 bg-white p-4 rounded-lg border shadow-sm">
+        <Search className="text-gray-400" />
+        <Input 
+          placeholder="Busca rápida: Nome, Plaqueta ou Nº do Ativo..." 
+          className="border-none shadow-none focus-visible:ring-0 text-base"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+        />
+      </div>
+
+      <div className="space-y-4 mt-4">
+            {isLoading ? (
+              <div className="flex items-center justify-center h-96">
+                <Loader2 className="animate-spin" />
+              </div>
+            ) : filteredAssets && filteredAssets.length > 0 ? (
+              <div className="border rounded-lg overflow-hidden bg-white">
+                <Table className="text-base">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[40px]">
+                        <Checkbox 
+                          checked={filteredAssets.length > 0 && selectedIds.size === filteredAssets.length}
+                          onCheckedChange={toggleSelectAll}
+                        />
+                      </TableHead>
+                      <TableHead className="text-base">Nº Ativo</TableHead>
+                      <TableHead className="text-base">Nº Plaqueta</TableHead>
+                      <TableHead className="text-base">Obra</TableHead>
+                      <TableHead className="text-base">Centro de Custo</TableHead>
+                      <TableHead className="text-base">Nome</TableHead>
+                      <TableHead className="text-right text-base">Total Acumulado (Composição)</TableHead>
+                      <TableHead className="text-base">Data Início</TableHead>
+                      <TableHead className="text-base">Status</TableHead>
+                      <TableHead className="text-right text-base">Ações</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {Object.entries(groupedAssets).map(([ccName, groupAssets]) => {
+                      const groupTotal = groupAssets.reduce((acc, asset) => acc + getAssetValue(asset), 0);
+                      return (
+                      <React.Fragment key={ccName}>
+                        <TableRow className="bg-slate-100 hover:bg-slate-200 cursor-pointer" onClick={() => toggleCC(ccName)}>
+                            <TableCell onClick={(e) => e.stopPropagation()}>
+                                <Checkbox 
+                                    checked={groupAssets.length > 0 && groupAssets.every(a => selectedIds.has(a.id))}
+                                    onCheckedChange={() => toggleSelectGroup(groupAssets)}
+                                />
+                            </TableCell>
+                            <TableCell colSpan={5} className="font-semibold py-2 text-base">
+                                <div className="flex items-center gap-2">
+                                    {expandedCCs[ccName] ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                                    <span>{ccName}</span>
+                                    <span className="text-sm font-normal text-muted-foreground ml-2">({groupAssets.length} ativos)</span>
+                                </div>
+                            </TableCell>
+                            <TableCell className="text-right font-bold text-base py-2">
+                                R$ {groupTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </TableCell>
+                            <TableCell colSpan={3} className="py-2"></TableCell>
+                        </TableRow>
+                        {expandedCCs[ccName] && groupAssets.map((asset) => (
+                      <TableRow 
+                        key={asset.id} 
+                        className="cursor-pointer hover:bg-slate-50"
+                        onClick={() => handleView(asset)}
+                      >
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          <Checkbox checked={selectedIds.has(asset.id)} onCheckedChange={() => toggleSelect(asset.id)} />
+                        </TableCell>
+                        <TableCell className="font-mono text-base">{(asset as any).assetNumber || "-"}</TableCell>
+                        <TableCell className="text-base">{(asset as any).tagNumber || "-"}</TableCell>
+                        <TableCell className="text-base text-muted-foreground">
+                          {projects?.find(p => String(p.id) === String((asset as any).projectId))?.name || "—"}
+                        </TableCell>
+                        <TableCell className="text-base">
+                          {formatCostCenter(asset.costCenter)}
+                        </TableCell>
+                        <TableCell>
+                          <div className="font-medium text-base">{asset.name}</div>
+                          <div className="text-sm text-muted-foreground">{asset.description}</div>
+                          {(asset as any).hasImpairment && (
+                            <div className="flex items-center gap-1 text-sm text-red-600 mt-1">
+                              <AlertTriangle size={14} />
+                              <span>Impairment</span>
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-base text-right font-medium">
+                          R$ {getAssetValue(asset).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </TableCell>
+                        <TableCell className="text-base">
+                          {(() => {
+                              const d = getLocalDateFromISO(asset.startDate);
+                              return d ? d.toLocaleDateString("pt-BR") : "-";
+                          })()}
+                        </TableCell>
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          <Select value={asset.status} onValueChange={(v) => handleStatusChange(asset, v)}>
+                            <SelectTrigger className="w-[140px] h-9 text-sm">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="planejamento">Planejamento</SelectItem>
+                              <SelectItem value="em_desenvolvimento">Em Desenv.</SelectItem>
+                              <SelectItem value="em_transito" disabled>Em Trânsito</SelectItem>
+                              <SelectItem value="concluido">Concluído</SelectItem>
+                              <SelectItem value="parado">Parado</SelectItem>
+                              <SelectItem value="baixado">Baixado</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={(e) => { e.stopPropagation(); handleView(asset); }}
+                            className="h-8 w-8 mr-1"
+                          >
+                            <Eye className="w-4 h-4 text-gray-600" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={(e) => { e.stopPropagation(); handleEdit(asset); }}
+                            className="h-8 w-8 mr-1"
+                          >
+                            <Pencil className="w-4 h-4 text-blue-600" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={(e) => { e.stopPropagation(); handleDelete(asset.id); }}
+                            className="h-8 w-8"
+                          >
+                            <Trash2 className="w-4 h-4 text-red-600" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                      </React.Fragment>
+                    );
+                    })}
+                  </TableBody>
+                  <tfoot className="bg-slate-50 font-bold">
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-right text-base">Total Acumulado</TableCell>
+                      <TableCell className="text-base text-right">
+                        R$ {totalAssetsValue.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </TableCell>
+                      <TableCell colSpan={3}></TableCell>
+                    </TableRow>
+                  </tfoot>
+                </Table>
+              </div>
+            ) : (
+              <Card className="p-12 text-center mt-4">
+                <p className="text-gray-500">Nenhum ativo registrado para esta obra.</p>
+              </Card>
+            )}
+          </div>
+    </div>
+  );
+}

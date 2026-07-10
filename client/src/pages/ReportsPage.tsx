@@ -1,0 +1,1310 @@
+import React, { useState, useEffect, useMemo } from "react";
+import { db } from "@/lib/firebase";
+import { collection, updateDoc, doc, onSnapshot, query, orderBy, limit, getDocs, where } from "firebase/firestore";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Calendar as CalendarIcon, CheckCircle2, FileText, User, Download, ChevronDown, ChevronRight, History, TrendingDown, ArrowRightLeft, ClipboardList, Maximize2 } from "lucide-react";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { toast } from "sonner";
+import { useLocation } from "wouter";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
+
+interface InventoryResult {
+  assetId: string;
+  newCostCenter: string;
+  verified: boolean;
+  observations?: string;
+}
+
+interface InventorySchedule {
+  id: string;
+  requesterId?: string; // Opcional para suportar agendamentos antigos
+  assetIds: string[];
+  costCenterCodes?: string[];
+  userIds: string[];
+  date: string;
+  notes: string;
+  status: 'pending' | 'waiting_approval' | 'completed';
+  results?: InventoryResult[];
+  approvedBy?: string;
+  approvedAt?: string;
+  completedAt?: string;
+  createdAt?: string;
+}
+
+const getBase64ImageFromURL = (url: string): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.setAttribute("crossOrigin", "anonymous");
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(img, 0, 0);
+        const dataURL = canvas.toDataURL("image/png");
+        resolve(dataURL);
+      } else {
+        reject(new Error("Canvas context is null"));
+      }
+    };
+    img.onerror = (error) => reject(error);
+    img.src = url;
+  });
+};
+
+const getLocalDateFromISO = (value: any) => {
+  if (!value) return new Date();
+
+  if (typeof value.toDate === 'function') {
+      const date = value.toDate();
+      return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  }
+
+  if (value instanceof Date) {
+      return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+
+  const isoString = String(value);
+  if (isoString.length === 10 && isoString.includes('-')) {
+      const [y, m, d] = isoString.split('-').map(Number);
+      return new Date(y, m - 1, d);
+  }
+  const date = new Date(isoString);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+};
+
+export default function ReportsPage() {
+  const { user: authUser } = useAuth();
+  const [, setLocation] = useLocation();
+  const [user, setUser] = useState<any>(authUser);
+
+  useEffect(() => {
+    if (authUser) {
+      setUser(authUser);
+    } else {
+      const storedUser = localStorage.getItem("obras_user");
+      if (storedUser) {
+        try {
+          setUser(JSON.parse(storedUser));
+        } catch (e) {
+          console.error("Erro ao recuperar usuário do storage", e);
+        }
+      }
+    }
+  }, [authUser]);
+
+  const [schedules, setSchedules] = useState<InventorySchedule[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
+  const [statusHistory, setStatusHistory] = useState<any[]>([]);
+  const [expenses, setExpenses] = useState<any[]>([]);
+  const [depreciationType, setDepreciationType] = useState<'fiscal' | 'corporate'>('fiscal');
+  const [assets, setAssets] = useState<any[]>([]);
+  const [assetClasses, setAssetClasses] = useState<any[]>([]);
+  const [movements, setMovements] = useState<any[]>([]);
+  const [projects, setProjects] = useState<any[]>([]);
+  const [costCenters, setCostCenters] = useState<any[]>([]);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "inventory_schedules"), (snapshot) => {
+      const loadedSchedules = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as InventorySchedule[];
+      setSchedules(loadedSchedules);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "users"), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setUsers(data);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const q = query(collection(db, "asset_status_history"), orderBy("changedAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setStatusHistory(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "expenses"), (snapshot) => {
+      setExpenses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "assets"), (snapshot) => {
+      setAssets(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "asset_classes"), (snapshot) => {
+      setAssetClasses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const q = query(collection(db, "asset_movements"), orderBy("date", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setMovements(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "projects"), (snapshot) => {
+      setProjects(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "cost_centers"), (snapshot) => {
+      setCostCenters(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const assetsByDate = useMemo(() => {
+    if (!assets) return {};
+    const groups: Record<string, any[]> = {};
+    assets.forEach((asset: any) => {
+      const date = asset.lastDepreciationDate || "Não Calculado";
+      if (!groups[date]) {
+        groups[date] = [];
+      }
+      groups[date].push(asset);
+    });
+    
+    return Object.keys(groups).sort((a, b) => {
+        if (a === "Não Calculado") return 1;
+        if (b === "Não Calculado") return -1;
+        return b.localeCompare(a);
+    }).reduce((acc, key) => {
+        acc[key] = groups[key];
+        return acc;
+    }, {} as Record<string, any[]>);
+  }, [assets]);
+
+  // Garante a leitura do ID independente do formato do objeto user
+  const currentUserId = (user as any)?.id || (user as any)?.openId || (user as any)?.uid || (user as any)?.sub;
+  const userRole = (user as any)?.role;
+
+  // Helper functions for names
+  const getProjectName = (id: string) => projects.find(p => String(p.id) === String(id))?.name || "—";
+  const getCostCenterName = (code: string) => {
+      const cc = costCenters.find((c: any) => c.code === code);
+      return cc ? `${cc.code} - ${cc.name}` : code || "—";
+  };
+
+  const handleExportMovements = () => {
+      if (!movements || movements.length === 0) {
+        toast.error("Não há movimentações para exportar.");
+        return;
+      }
+
+      const data = movements.flatMap(m => {
+        const origin = m.originProjectId ? `Obra: ${getProjectName(m.originProjectId)}` : 
+                       m.originCostCenter ? `CC: ${getCostCenterName(m.originCostCenter)}` : "-";
+        
+        let destination = "-";
+        if (m.type === "transfer_project") destination = `Obra: ${getProjectName(m.destinationProjectId)}`;
+        else if (m.type === "transfer_cost_center") destination = `CC: ${getCostCenterName(m.destinationCostCenter)}`;
+        else if (m.movementCategory === "write_off") destination = "Baixado";
+        else if (m.movementCategory === "partial_write_off") destination = "Baixa Parcial";
+
+        const baseData = {
+          "Data": new Date(m.date).toLocaleDateString('pt-BR'),
+          "Tipo": m.type,
+          "Origem": origin,
+          "Destino": destination,
+          "Solicitante": m.performedBy || "-",
+          "Aprovador": m.approvedBy || (m.rejectedBy ? `Rejeitado por ${m.rejectedBy}` : "-"),
+          "Data Aprovação": m.approvedAt ? new Date(m.approvedAt).toLocaleString('pt-BR') : (m.rejectedAt ? new Date(m.rejectedAt).toLocaleString('pt-BR') : "-"),
+          "Status": m.status === 'completed' ? 'Concluído' : m.status === 'pending_approval' ? 'Pendente' : m.status === 'rejected' ? 'Rejeitado' : m.status
+        };
+
+        if (m.isBatch && m.assets && m.assets.length > 0) {
+            return m.assets.map((asset: any) => ({
+                ...baseData,
+                "Ativo": asset.assetName,
+                "Nº Ativo": asset.assetNumber
+            }));
+        }
+        return [{
+            ...baseData,
+            "Ativo": m.assetName,
+            "Nº Ativo": m.assetNumber
+        }];
+      });
+
+      const ws = XLSX.utils.json_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Movimentações");
+      
+      // Adjust column widths
+      ws['!cols'] = [{ wch: 12 }, { wch: 30 }, { wch: 15 }, { wch: 25 }, { wch: 25 }, { wch: 25 }, { wch: 20 }, { wch: 15 }];
+      
+      XLSX.writeFile(wb, `relatorio_movimentacoes_${new Date().toISOString().split('T')[0]}.xlsx`);
+      toast.success("Relatório de movimentações exportado!");
+  };
+
+  const handleApproveInventory = async (schedule: InventorySchedule) => {
+    if (!schedule.results) return;
+
+    try {
+      // Atualiza os ativos com os novos centros de custo
+      for (const result of schedule.results) {
+        if (result.verified && result.newCostCenter) {
+          await updateDoc(doc(db, "assets", result.assetId), {
+            costCenter: result.newCostCenter
+          });
+        }
+      }
+
+      const scheduleRef = doc(db, "inventory_schedules", schedule.id);
+      await updateDoc(scheduleRef, { status: 'completed' });
+
+      toast.success("Inventário aprovado e ativos atualizados com sucesso!");
+    } catch (error) {
+      toast.error("Erro ao atualizar ativos. Tente novamente.");
+    }
+  };
+
+  // Filtra agendamentos que precisam de aprovação do usuário atual (solicitante)
+  // Adicionado String() para garantir comparação correta e fallback (!s.requesterId) para itens legados
+  const pendingApprovals = schedules.filter(s => 
+    s.status === 'waiting_approval' && (!s.requesterId || String(s.requesterId) === String(currentUserId))
+  );
+
+  // Filtra agendamentos concluídos para histórico
+  const completedSchedules = schedules.filter(s => 
+    s.status === 'completed' && (
+      userRole === 'admin' || 
+      userRole === 'diretoria' || 
+      !s.requesterId || 
+      String(s.requesterId) === String(currentUserId)
+    )
+  );
+
+  const schedulesByDate = useMemo(() => {
+    const groups: Record<string, InventorySchedule[]> = {};
+    completedSchedules.forEach(schedule => {
+      let dateKey = "";
+      const val = schedule.date as any;
+      if (val?.toDate) {
+         const d = val.toDate();
+         dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      } else if (val instanceof Date) {
+         dateKey = `${val.getFullYear()}-${String(val.getMonth() + 1).padStart(2, '0')}-${String(val.getDate()).padStart(2, '0')}`;
+      } else {
+         const str = String(val);
+         dateKey = str.includes('T') ? str.split('T')[0] : str;
+      }
+      if (!groups[dateKey]) {
+        groups[dateKey] = [];
+      }
+      groups[dateKey].push(schedule);
+    });
+    return Object.entries(groups).sort((a, b) => b[0].localeCompare(a[0]));
+  }, [completedSchedules]);
+
+  const [expandedDates, setExpandedDates] = useState<Record<string, boolean>>({});
+
+  const toggleDate = (date: string) => {
+    setExpandedDates(prev => ({
+      ...prev,
+      [date]: !prev[date]
+    }));
+  };
+
+  useEffect(() => {
+    if (schedulesByDate.length > 0 && Object.keys(expandedDates).length === 0) {
+      setExpandedDates({ [schedulesByDate[0][0]]: true });
+    }
+  }, [schedulesByDate]);
+
+  const [expandedDepreciationDates, setExpandedDepreciationDates] = useState<Record<string, boolean>>({});
+
+  const toggleDepreciationDate = (date: string) => {
+    setExpandedDepreciationDates(prev => ({
+      ...prev,
+      [date]: !prev[date]
+    }));
+  };
+
+  const handleExportStatusHistory = () => {
+    if (!statusHistory || statusHistory.length === 0) {
+      toast.error("Não há dados de histórico para exportar.");
+      return;
+    }
+
+    const dataToExport = statusHistory.map(log => ({
+      "Data/Hora": new Date(log.changedAt).toLocaleString('pt-BR'),
+      "Ativo": log.assetName,
+      "Nº Ativo": log.assetNumber,
+      "Status Anterior": log.oldStatus?.replace('_', ' ') || '-',
+      "Novo Status": log.newStatus?.replace('_', ' ') || '-',
+      "Alterado Por": log.changedBy,
+      "Observações": log.notes || "-"
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(dataToExport);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Historico_Status_Ativos");
+
+    // Auto-size columns
+    const wscols = [
+      { wch: 20 }, { wch: 30 }, { wch: 15 }, { wch: 20 }, { wch: 20 }, { wch: 25 }, { wch: 40 }
+    ];
+    ws['!cols'] = wscols;
+
+    XLSX.writeFile(wb, `historico_status_ativos_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Histórico de status exportado para Excel com sucesso!");
+  };
+
+  const handleExportDepreciation = () => {
+    if (!assets || assets.length === 0) {
+      toast.error("Não há dados para exportar.");
+      return;
+    }
+
+    const dataToExport = assets.map((asset: any) => {
+        const assetExpenses = expenses.filter(e => String(e.assetId) === String(asset.id));
+        const totalCost = assetExpenses.reduce((acc: number, curr: any) => acc + Number(curr.amount), Number(asset.value || 0));
+
+        const normalize = (str: string) => str?.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "") || "";
+        const assetClassDef = assetClasses?.find((c: any) => normalize(c.name) === normalize(asset.assetClass));
+        const usefulLifeYears = depreciationType === 'corporate' 
+            ? (Number(asset.corporateUsefulLife) || Number(assetClassDef?.corporateUsefulLife) || 0)
+            : (Number(asset.usefulLife) || Number(assetClassDef?.usefulLife) || 0);
+
+        const residualValue = Number(asset.residualValue || 0);
+        const totalQuotas = usefulLifeYears * 12;
+        let monthlyQuota = 0;
+        let calculatedQuotas = 0;
+        let accumulated = 0;
+
+        if (usefulLifeYears > 0) {
+            monthlyQuota = Math.max(0, totalCost - residualValue) / (usefulLifeYears * 12);
+            if (asset.startDate && asset.lastDepreciationDate) {
+                const start = getLocalDateFromISO(asset.startDate);
+                start.setMonth(start.getMonth() + 1, 1); // Regra do mês seguinte (igual ao Dashboard)
+
+                const end = getLocalDateFromISO(asset.lastDepreciationDate);
+                const startMonthIndex = start.getFullYear() * 12 + start.getMonth();
+                const endMonthIndex = end.getFullYear() * 12 + end.getMonth();
+                const monthsDiff = endMonthIndex - startMonthIndex + 1;
+
+                calculatedQuotas = Math.max(0, Math.min(monthsDiff, totalQuotas));
+                accumulated = calculatedQuotas * monthlyQuota;
+            }
+        }
+
+        const netValue = totalCost - accumulated;
+
+        return {
+            "Ativo": asset.name,
+            "Plaqueta": asset.tagNumber || "-",
+            "Classe": asset.assetClass || "-",
+            "Status": asset.status ? asset.status.replace('_', ' ') : "-",
+            "Data Início": asset.startDate ? new Date(asset.startDate).toLocaleDateString('pt-BR') : "-",
+            "Qtd. Cotas": `${calculatedQuotas} / ${totalQuotas}`,
+            "Data Último Cálculo": asset.lastDepreciationDate ? new Date(asset.lastDepreciationDate).toLocaleDateString('pt-BR') : "Não Calculado",
+            "Custo Total": totalCost,
+            "Cota Mensal": monthlyQuota,
+            "Deprec. Acumulada": accumulated,
+            "Valor Líquido": netValue
+        };
+    });
+
+    const ws = XLSX.utils.json_to_sheet(dataToExport);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Relatorio_Depreciacao");
+
+    XLSX.writeFile(wb, `relatorio_depreciacao_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Relatório de depreciação exportado com sucesso!");
+  };
+
+  const handleExportReport = async (clickedSchedule: InventorySchedule) => {
+    if (!assets) return;
+
+    // 1. Encontra todos os agendamentos relacionados para agrupar no relatório
+    const dateToMatch = getLocalDateFromISO(clickedSchedule.date).toLocaleDateString('pt-BR');
+    
+    const relatedSchedules = completedSchedules.filter(s => {
+        if (getLocalDateFromISO(s.date).toLocaleDateString('pt-BR') !== dateToMatch) {
+            return false;
+        }
+
+        // Agrupa por centro de custo, se o agendamento clicado foi por CC
+        if (clickedSchedule.costCenterCodes && clickedSchedule.costCenterCodes.length > 0) {
+            const clickedCCs = [...clickedSchedule.costCenterCodes].sort().join(',');
+            const currentCCs = s.costCenterCodes ? [...s.costCenterCodes].sort().join(',') : '';
+            if (!currentCCs) return false;
+            return clickedCCs === currentCCs;
+        }
+
+        // Senão, agrupa por responsáveis (apenas para agendamentos que não foram por CC)
+        if (s.costCenterCodes && s.costCenterCodes.length > 0) return false;
+        const clickedUsers = [...clickedSchedule.userIds].sort().join(',');
+        const currentUsers = [...s.userIds].sort().join(',');
+        return clickedUsers === currentUsers;
+    });
+
+    if (!relatedSchedules.find(s => s.id === clickedSchedule.id)) {
+        relatedSchedules.push(clickedSchedule); // Garante que pelo menos o clicado seja processado
+    }
+
+    // 2. Agrega os dados de todos os agendamentos em uma única lista
+    const mainSchedule = relatedSchedules[0];
+    // Usa flatMap para combinar os resultados, garantindo que results exista
+    const allResults = relatedSchedules.flatMap(s => s.results || []);
+
+    // Define o schedule a ser usado como base para assinaturas e cabeçalho
+    const scheduleForMetadata = mainSchedule;
+
+    try {
+      const doc = new jsPDF();
+      let logoData: string | null = null;
+      try {
+        logoData = await getBase64ImageFromURL("/icone.png");
+      } catch (error) {
+        console.warn("Logo não carregado:", error);
+      }
+
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+
+      const addHeaderAndWatermark = (data: any) => {
+        // Watermark
+        if (logoData) {
+          doc.saveGraphicsState();
+          doc.setGState(new (doc as any).GState({ opacity: 0.1 }));
+          const wmWidth = 80;
+          const wmHeight = 40;
+          const wmX = (pageWidth - wmWidth) / 2;
+          const wmY = (pageHeight - wmHeight) / 2;
+          doc.addImage(logoData, 'PNG', wmX, wmY, wmWidth, wmHeight);
+          doc.restoreGraphicsState();
+
+          // Header
+          doc.addImage(logoData, 'PNG', 14, 10, 25, 15);
+        }
+        doc.setFontSize(16);
+        doc.setTextColor(40);
+        doc.text("Relatório de Inventário", pageWidth - 14, 18, { align: 'right' });
+        doc.setFontSize(9);
+        doc.setTextColor(100);
+        doc.text(`Data: ${getLocalDateFromISO(scheduleForMetadata.date).toLocaleDateString('pt-BR')}`, pageWidth - 14, 24, { align: 'right' });
+        
+        if (scheduleForMetadata.costCenterCodes && scheduleForMetadata.costCenterCodes.length > 0) {
+             doc.text(`Centros de Custo: ${scheduleForMetadata.costCenterCodes.join(', ')}`, pageWidth - 14, 29, { align: 'right' });
+        } else {
+             const responsibles = (scheduleForMetadata.userIds || []).map(uid => users.find(u => u.id === uid)?.name).filter(Boolean).join(", ");
+             doc.text(`Responsáveis: ${responsibles}`, pageWidth - 14, 29, { align: 'right' });
+        }
+        
+        doc.setDrawColor(200);
+        doc.line(14, 30, pageWidth - 14, 30);
+      };
+
+      const tableData = allResults.map(result => {
+        const asset = assets.find(a => a.id === result.assetId);
+        
+        const currentCC = typeof asset?.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset?.costCenter;
+        const newCC = result?.newCostCenter || currentCC;
+
+        const ccName = costCenters.find(c => c.code === currentCC)?.name || "";
+        const assetDisplay = asset?.assetNumber ? `${asset.assetNumber} - ${ccName}` : "-";
+
+        return [
+          assetDisplay,
+          asset?.tagNumber || "-",
+          asset?.name || "-",
+          currentCC || "-",
+          newCC || "-",
+          result?.verified ? "Verificado" : "Não Verificado",
+          // @ts-ignore - observations might not be in interface but exists in data
+          result?.observations || ""
+        ];
+      });
+
+      autoTable(doc, {
+        head: [["Nº Ativo - Centro de Custo", "Plaqueta", "Nome", "CC Anterior", "Novo CC", "Status", "Obs"]],
+        body: tableData,
+        startY: 35,
+        didDrawPage: addHeaderAndWatermark,
+        styles: { fontSize: 8, cellPadding: 3 },
+        headStyles: { fillColor: [22, 163, 74], textColor: 255, fontStyle: 'bold' },
+        alternateRowStyles: { fillColor: [240, 253, 244] },
+        margin: { top: 35 }
+      });
+
+      // Signatures
+      const finalY = (doc as any).lastAutoTable.finalY + 40;
+      
+      doc.setDrawColor(0);
+      // Linhas de assinatura (3 colunas)
+      doc.line(15, finalY, 65, finalY);   // Solicitante
+      doc.line(80, finalY, 130, finalY);  // Responsável
+      doc.line(145, finalY, 195, finalY); // Aprovador
+
+      // Assinatura do Solicitante
+      // O solicitante no PDF será sempre o usuário logado que está gerando o relatório
+      const requester = users.find(u => String(u.id) === String(currentUserId)) || user;
+
+      if (requester?.signature && requester.signature.startsWith('data:image')) {
+        try {
+          doc.addImage(requester.signature, 'PNG', 20, finalY - 25, 40, 20);
+        } catch (e) { console.warn("Erro ao adicionar assinatura do solicitante", e); }
+      }
+
+      // Assinatura do Responsável (pega o primeiro se houver múltiplos)
+      const responsibleId = scheduleForMetadata.userIds[0];
+      const responsible = users.find(u => String(u.id) === String(responsibleId));
+      if (responsible?.signature && responsible.signature.startsWith('data:image')) {
+        try {
+          doc.addImage(responsible.signature, 'PNG', 85, finalY - 25, 40, 20);
+        } catch (e) { console.warn("Erro ao adicionar assinatura do responsável", e); }
+      }
+      
+      // Assinatura do Aprovador
+      const approver = users.find(u => u.name === scheduleForMetadata.approvedBy);
+      if (approver?.signature && approver.signature.startsWith('data:image')) {
+        try {
+          doc.addImage(approver.signature, 'PNG', 150, finalY - 25, 40, 20);
+        } catch (e) { console.warn("Erro ao adicionar assinatura do aprovador", e); }
+      }
+      
+      doc.setFontSize(9);
+      doc.setTextColor(0);
+      doc.text("Solicitante", 40, finalY + 5, { align: 'center' });
+      doc.text("Responsável", 105, finalY + 5, { align: 'center' });
+      doc.text("Aprovador", 170, finalY + 5, { align: 'center' });
+      doc.text(requester?.name || "N/A", 40, finalY + 10, { align: 'center' });
+      doc.text(responsible?.name || "N/A", 105, finalY + 10, { align: 'center' });
+      doc.text(scheduleForMetadata.approvedBy || "N/A", 170, finalY + 10, { align: 'center' });
+
+      doc.setFontSize(7);
+      doc.setTextColor(100);
+      
+      const formatDate = (d: any) => {
+        if (!d) return "-";
+        const dateObj = d?.toDate ? d.toDate() : new Date(d);
+        return dateObj.toLocaleString('pt-BR');
+      };
+
+      doc.text(formatDate(scheduleForMetadata.createdAt || scheduleForMetadata.date), 40, finalY + 15, { align: 'center' });
+      doc.text(formatDate(scheduleForMetadata.approvedAt), 105, finalY + 15, { align: 'center' });
+      doc.text(formatDate(scheduleForMetadata.approvedAt), 170, finalY + 15, { align: 'center' });
+
+      doc.save(`relatorio_inventario_${getLocalDateFromISO(scheduleForMetadata.date).toISOString().split('T')[0]}.pdf`);
+      toast.success("Relatório PDF gerado com sucesso!");
+    } catch (error) {
+      console.error("Erro ao gerar PDF:", error);
+      toast.error("Erro ao gerar PDF.");
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <h1 className="text-3xl font-bold text-slate-700 flex items-center gap-2">
+        <FileText className="h-8 w-8" />
+        Relatórios
+      </h1>
+
+      <Tabs defaultValue="status-history" className="w-full">
+        <TabsList className="grid w-full grid-cols-5 h-auto p-1 gap-1">
+          <TabsTrigger 
+            value="status-history" 
+            className="data-[state=active]:bg-blue-600 data-[state=active]:text-white text-slate-600 text-[144%] py-1 font-bold transition-all border border-blue-600 shadow-md rounded-md"
+          >
+            Rastreabilidade
+          </TabsTrigger>
+          <TabsTrigger 
+            value="depreciation" 
+            className="data-[state=active]:bg-emerald-600 data-[state=active]:text-white text-slate-600 text-[144%] py-1 font-bold transition-all border border-emerald-600 shadow-md rounded-md"
+          >
+            Depreciação
+          </TabsTrigger>
+          <TabsTrigger 
+            value="inventory-history" 
+            className="data-[state=active]:bg-orange-600 data-[state=active]:text-white text-slate-600 text-[144%] py-1 font-bold transition-all border border-orange-600 shadow-md rounded-md"
+          >
+            Histórico Inventários
+          </TabsTrigger>
+          <TabsTrigger 
+            value="movements" 
+            className="data-[state=active]:bg-cyan-600 data-[state=active]:text-white text-slate-600 text-[144%] py-1 font-bold transition-all border border-cyan-600 shadow-md rounded-md"
+          >
+            Movimentações
+          </TabsTrigger>
+          <TabsTrigger 
+            value="inventory-report" 
+            className="data-[state=active]:bg-purple-600 data-[state=active]:text-white text-slate-600 text-[144%] py-1 font-bold transition-all border border-purple-600 shadow-md rounded-md"
+          >
+            Relatório Inventários
+          </TabsTrigger>
+        </TabsList>
+
+      {/* Seção de Rastreabilidade de Status */}
+      <TabsContent value="status-history">
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-slate-700 text-xl">
+              <History className="h-6 w-6" />
+              Rastreabilidade de Status dos Ativos
+            </CardTitle>
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={handleExportStatusHistory} className="bg-green-600 hover:bg-green-700 text-white">
+                <Download className="h-4 w-4 mr-2" />
+                Exportar Excel
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="rounded-md border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Data/Hora</TableHead>
+                  <TableHead>Ativo</TableHead>
+                  <TableHead>Status Anterior</TableHead>
+                  <TableHead>Novo Status</TableHead>
+                  <TableHead>Alterado Por</TableHead>
+                  <TableHead>Observações</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {statusHistory.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                      Nenhum histórico registrado.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  statusHistory.map((log) => (
+                    <TableRow key={log.id}>
+                      <TableCell>{new Date(log.changedAt).toLocaleString('pt-BR')}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-col">
+                          <span className="font-medium">{log.assetName}</span>
+                          <span className="text-xs text-muted-foreground">{log.assetNumber}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800 capitalize">
+                          {log.oldStatus?.replace('_', ' ') || '-'}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 capitalize">
+                          {log.newStatus?.replace('_', ' ') || '-'}
+                        </span>
+                      </TableCell>
+                      <TableCell>{log.changedBy}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{log.notes || "-"}</TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+      </TabsContent>
+
+      {/* Seção de Depreciação/Amortização */}
+      <TabsContent value="depreciation">
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-slate-700 text-xl">
+              <TrendingDown className="h-6 w-6" />
+              Relatório de Depreciação/Amortização
+            </CardTitle>
+            <div className="flex items-center gap-2">
+              <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  onClick={() => setDepreciationType(prev => prev === 'fiscal' ? 'corporate' : 'fiscal')}
+                  className="text-xs text-slate-400 hover:text-slate-600"
+              >
+                  {depreciationType === 'fiscal' ? 'Visão Fiscal' : 'Visão Societária'}
+              </Button>
+              <Button size="sm" onClick={handleExportDepreciation} className="bg-green-600 hover:bg-green-700 text-white">
+                <Download className="h-4 w-4 mr-2" />
+                Exportar Excel
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {Object.entries(assetsByDate).map(([date, groupAssets]) => {
+            const runTime = groupAssets.find((a: any) => a.lastDepreciationRunAt)?.lastDepreciationRunAt;
+            const isExpanded = expandedDepreciationDates[date];
+            
+            const groupTotals = groupAssets.reduce((acc: any, asset: any) => {
+                const assetExpenses = expenses.filter(e => String(e.assetId) === String(asset.id));
+                const totalCost = assetExpenses.reduce((sum: number, curr: any) => sum + Number(curr.amount), Number(asset.value || 0));
+
+                const normalize = (str: string) => str?.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "") || "";
+                const assetClassDef = assetClasses?.find((c: any) => normalize(c.name) === normalize(asset.assetClass));
+                const usefulLifeYears = depreciationType === 'corporate' 
+                    ? (Number(asset.corporateUsefulLife) || Number(assetClassDef?.corporateUsefulLife) || 0)
+                    : (Number(asset.usefulLife) || Number(assetClassDef?.usefulLife) || 0);
+
+                const residualValue = Number(asset.residualValue || 0);
+                const totalQuotas = usefulLifeYears * 12;
+                let monthlyQuota = 0;
+                let calculatedQuotas = 0;
+                let accumulated = 0;
+
+                if (usefulLifeYears > 0) {
+                    monthlyQuota = Math.max(0, totalCost - residualValue) / (usefulLifeYears * 12);
+                    if (asset.startDate && asset.lastDepreciationDate) {
+                        const start = getLocalDateFromISO(asset.startDate);
+                        start.setMonth(start.getMonth() + 1, 1); 
+
+                        const end = getLocalDateFromISO(asset.lastDepreciationDate);
+                        const startMonthIndex = start.getFullYear() * 12 + start.getMonth();
+                        const endMonthIndex = end.getFullYear() * 12 + end.getMonth();
+                        const monthsDiff = endMonthIndex - startMonthIndex + 1;
+
+                        calculatedQuotas = Math.max(0, Math.min(monthsDiff, totalQuotas));
+                        accumulated = calculatedQuotas * monthlyQuota;
+                    }
+                }
+
+                const netValue = totalCost - accumulated;
+
+                return {
+                    totalCost: acc.totalCost + totalCost,
+                    monthlyQuota: acc.monthlyQuota + monthlyQuota,
+                    accumulated: acc.accumulated + accumulated,
+                    netValue: acc.netValue + netValue
+                };
+            }, { totalCost: 0, monthlyQuota: 0, accumulated: 0, netValue: 0 });
+            
+            return (
+            <div key={date} className="mb-4 last:mb-0">
+                <h3 
+                    className="text-sm font-semibold text-slate-500 mb-2 flex items-center gap-2 uppercase tracking-wider bg-slate-50 p-2 rounded border cursor-pointer hover:bg-slate-100 transition-colors select-none"
+                    onClick={() => toggleDepreciationDate(date)}
+                >
+                    {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                    <CalendarIcon className="h-4 w-4" />
+                    {date === "Não Calculado" ? "Não Calculado" : (
+                        <div className="flex items-center gap-2">
+                            <span>Data do Cálculo: {new Date(date + 'T12:00:00').toLocaleDateString('pt-BR')}</span>
+                            {runTime && <span className="text-xs text-muted-foreground font-normal normal-case border-l pl-2">Processado em: {new Date(runTime).toLocaleString('pt-BR')}</span>}
+                        </div>
+                    )}
+                    <span className="ml-auto text-xs font-normal normal-case bg-white px-2 py-0.5 rounded border">
+                        {groupAssets.length} ativos
+                    </span>
+                </h3>
+                {isExpanded && (
+                <div className="rounded-md border overflow-hidden">
+                    <Table>
+                    <TableHeader>
+                        <TableRow>
+                        <TableHead>Ativo</TableHead>
+                        <TableHead>Plaqueta</TableHead>
+                        <TableHead>Classe</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Data Início</TableHead>
+                        <TableHead className="text-center">Qtd. Cotas</TableHead>
+                        <TableHead className="text-right">Custo Total</TableHead>
+                        <TableHead className="text-right">Cota Mensal</TableHead>
+                        <TableHead className="text-right">Deprec. Acumulada</TableHead>
+                        <TableHead className="text-right">Valor Líquido</TableHead>
+                        </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        {groupAssets.map((asset: any) => {
+                            const assetExpenses = expenses.filter(e => String(e.assetId) === String(asset.id));
+                            const totalCost = assetExpenses.reduce((acc: number, curr: any) => acc + Number(curr.amount), Number(asset.value || 0));
+
+                            const normalize = (str: string) => str?.toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "") || "";
+                            const assetClassDef = assetClasses?.find((c: any) => normalize(c.name) === normalize(asset.assetClass));
+                            const usefulLifeYears = depreciationType === 'corporate' 
+                                ? (Number(asset.corporateUsefulLife) || Number(assetClassDef?.corporateUsefulLife) || 0)
+                                : (Number(asset.usefulLife) || Number(assetClassDef?.usefulLife) || 0);
+
+                            const residualValue = Number(asset.residualValue || 0);
+                            const totalQuotas = usefulLifeYears * 12;
+                            let monthlyQuota = 0;
+                            let calculatedQuotas = 0;
+                            let accumulated = 0;
+
+                            if (usefulLifeYears > 0) {
+                                monthlyQuota = Math.max(0, totalCost - residualValue) / (usefulLifeYears * 12);
+                                if (asset.startDate && asset.lastDepreciationDate) {
+                                    const start = getLocalDateFromISO(asset.startDate);
+                                    start.setMonth(start.getMonth() + 1, 1); // Regra do mês seguinte (igual ao Dashboard)
+
+                                    const end = getLocalDateFromISO(asset.lastDepreciationDate);
+                                    const startMonthIndex = start.getFullYear() * 12 + start.getMonth();
+                                    const endMonthIndex = end.getFullYear() * 12 + end.getMonth();
+                                    const monthsDiff = endMonthIndex - startMonthIndex + 1;
+
+                                    calculatedQuotas = Math.max(0, Math.min(monthsDiff, totalQuotas));
+                                    accumulated = calculatedQuotas * monthlyQuota;
+                                }
+                            }
+
+                            const netValue = totalCost - accumulated;
+
+                            return (
+                                <TableRow key={asset.id}>
+                                    <TableCell className="font-medium">{asset.name}</TableCell>
+                                    <TableCell>{asset.tagNumber || "-"}</TableCell>
+                                    <TableCell>{asset.assetClass || "-"}</TableCell>
+                                    <TableCell className="capitalize">{asset.status?.replace('_', ' ') || "-"}</TableCell>
+                                    <TableCell>{asset.startDate ? new Date(asset.startDate).toLocaleDateString('pt-BR') : "-"}</TableCell>
+                                    <TableCell className="text-center">{calculatedQuotas} / {totalQuotas}</TableCell>
+                                    <TableCell className="text-right">R$ {totalCost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</TableCell>
+                                    <TableCell className="text-right">R$ {monthlyQuota.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</TableCell>
+                                    <TableCell className="text-right text-red-600">R$ {accumulated.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</TableCell>
+                                    <TableCell className="text-right font-bold">R$ {netValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</TableCell>
+                                </TableRow>
+                            );
+                        })}
+                    </TableBody>
+                    <tfoot className="bg-slate-50 font-bold border-t">
+                        <TableRow>
+                            <TableCell colSpan={6} className="text-right">TOTAIS</TableCell>
+                            <TableCell className="text-right">R$ {groupTotals.totalCost.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</TableCell>
+                            <TableCell className="text-right">R$ {groupTotals.monthlyQuota.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</TableCell>
+                            <TableCell className="text-right text-red-600">R$ {groupTotals.accumulated.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</TableCell>
+                            <TableCell className="text-right font-bold">R$ {groupTotals.netValue.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</TableCell>
+                        </TableRow>
+                    </tfoot>
+                    </Table>
+                </div>
+                )}
+            </div>
+            );
+          })}
+          {(!assets || assets.length === 0) && (
+            <div className="text-center py-8 text-muted-foreground">
+                Nenhum ativo encontrado.
+            </div>
+          )}
+        </CardContent>
+      </Card>
+      </TabsContent>
+
+      {/* Seção de Histórico de Inventários Concluídos */}
+      <TabsContent value="inventory-history">
+      <div className="space-y-6">
+      {/* Seção de Aprovações Pendentes */}
+      <Card className="border-blue-200 bg-blue-50">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-blue-800 text-2xl">
+            <CheckCircle2 className="h-5 w-5" />
+            Aprovações de Inventário Pendentes ({pendingApprovals.length})
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {pendingApprovals.length > 0 ? (
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {pendingApprovals.map(schedule => (
+                <div key={schedule.id} className="bg-white p-4 rounded-lg border border-blue-100 shadow-sm flex flex-col justify-between gap-4">
+                  <div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <CalendarIcon className="h-5 w-5 text-blue-600" />
+                      <span className="font-medium text-slate-800 text-lg">
+                        Realizado em: {getLocalDateFromISO(schedule.date).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <div className="text-lg text-slate-600 mb-2">
+                      <p><strong>{schedule.assetIds.length}</strong> ativos verificados.</p>
+                      <div className="flex items-center gap-1 mt-1 text-base text-slate-500">
+                        <User className="h-4 w-4" />
+                        Responsáveis: {(schedule.userIds || []).map(uid => users?.find(u => u.id === uid)?.name).filter(Boolean).join(", ") || "N/A"}
+                      </div>
+                    </div>
+                  </div>
+                  <Button onClick={() => handleApproveInventory(schedule)} className="w-full bg-blue-600 hover:bg-blue-700 text-white text-lg h-12">
+                    Aceitar Contagem e Atualizar
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-lg text-blue-600/80">Nenhuma aprovação pendente no momento.</p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-slate-700 text-xl">
+              <FileText className="h-6 w-6" />
+              Histórico de Inventários Concluídos
+            </CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {schedulesByDate.length === 0 ? (
+            <div className="text-center text-muted-foreground py-8 text-lg">
+              Nenhum inventário concluído.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {schedulesByDate.map(([date, daySchedules]) => (
+                <div key={date} className="border rounded-md overflow-hidden">
+                  <div 
+                    className="bg-slate-100 p-3 flex items-center justify-between cursor-pointer hover:bg-slate-200 transition-colors"
+                    onClick={() => toggleDate(date)}
+                  >
+                    <div className="flex items-center gap-2 font-medium text-slate-700 text-lg">
+                      {expandedDates[date] ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
+                      <CalendarIcon className="h-5 w-5 text-slate-500" />
+                      <span className="capitalize">
+                        {new Date(date + 'T12:00:00').toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })}
+                      </span>
+                      <span className="text-sm font-normal text-muted-foreground ml-2 bg-white px-2 py-0.5 rounded-full border">
+                        {daySchedules.length} {daySchedules.length === 1 ? 'inventário' : 'inventários'}
+                      </span>
+                    </div>
+                  </div>
+                  
+                  {expandedDates[date] && (
+                    <div className="border-t">
+                      <Table className="text-lg">
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="text-lg">Ativo</TableHead>
+                            <TableHead className="text-lg">Nome</TableHead>
+                            <TableHead className="text-lg">CC Anterior</TableHead>
+                            <TableHead className="text-lg">Novo CC</TableHead>
+                            <TableHead className="text-right text-lg">Status</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {daySchedules.map(schedule => (
+                            <React.Fragment key={schedule.id}>
+                              <TableRow className="bg-slate-50/50 hover:bg-slate-100">
+                                <TableCell colSpan={5} className="py-3">
+                                  <div className="flex justify-between items-center">
+                                    <div className="flex items-center gap-4 text-base">
+                                      <div className="flex items-center gap-2 text-slate-600">
+                                        <User className="w-5 h-5" />
+                                        <span className="font-medium">Responsáveis:</span>
+                                        {(schedule.userIds || []).map(uid => users?.find(u => u.id === uid)?.name).filter(Boolean).join(", ")}
+                                      </div>
+                                    </div>
+                                    <Button variant="outline" size="sm" onClick={() => handleExportReport(schedule)} className="h-8 text-sm bg-white border-slate-300 hover:bg-slate-50 text-slate-700">
+                                      <Download className="w-4 h-4 mr-2" />
+                                      Exportar PDF
+                                    </Button>
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                              {schedule.assetIds.map(id => {
+                                const asset = assets?.find(a => a.id === id);
+                                const result = schedule.results?.find(r => r.assetId === id);
+                                const currentCC = typeof asset?.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset?.costCenter;
+                                return (
+                                  <TableRow key={id} className="hover:bg-slate-50/50">
+                                    <TableCell className="font-mono text-base pl-6">{asset?.assetNumber}</TableCell>
+                                    <TableCell className="text-lg">{asset?.name}</TableCell>
+                                    <TableCell className="text-muted-foreground text-lg">{getCostCenterName(currentCC)}</TableCell>
+                                    <TableCell className={`text-lg ${result?.newCostCenter && result.newCostCenter !== currentCC ? "text-orange-600 font-bold" : ""}`}>
+                                      {getCostCenterName(result?.newCostCenter || currentCC)}
+                                    </TableCell>
+                                    <TableCell className="text-right">
+                                        {result?.verified ? (
+                                            <span className="inline-flex items-center px-2 py-0.5 rounded text-sm font-medium bg-green-100 text-green-800">
+                                                Verificado
+                                            </span>
+                                        ) : (
+                                            <span className="text-muted-foreground text-sm">Pendente</span>
+                                        )}
+                                    </TableCell>
+                                  </TableRow>
+                                );
+                              })}
+                            </React.Fragment>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+      </div>
+      </TabsContent>
+
+      {/* Seção de Relatório de Movimentações */}
+      <TabsContent value="movements">
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-slate-700 text-xl">
+              <ArrowRightLeft className="h-6 w-6" />
+              Relatório de Movimentações
+            </CardTitle>
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={handleExportMovements} className="bg-green-600 hover:bg-green-700 text-white">
+                <Download className="h-4 w-4 mr-2" />
+                Exportar Excel
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="rounded-md border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Data</TableHead>
+                  <TableHead>Ativo</TableHead>
+                  <TableHead>Tipo</TableHead>
+                  <TableHead>Origem</TableHead>
+                  <TableHead>Destino</TableHead>
+                  <TableHead>Solicitante</TableHead>
+                  <TableHead>Aprovador</TableHead>
+                  <TableHead>Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {movements.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                      Nenhuma movimentação registrada.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  movements.flatMap((m) => {
+                    if (m.isBatch && m.assets && m.assets.length > 0) {
+                        return m.assets.map((asset: any, idx: number) => ({ ...m, ...asset, uniqueKey: `${m.id}_${idx}` }));
+                    }
+                    return [{ ...m, uniqueKey: m.id }];
+                  }).map((m) => {
+                    const origin = m.originProjectId ? `Obra: ${getProjectName(m.originProjectId)}` : 
+                                   m.originCostCenter ? `CC: ${getCostCenterName(m.originCostCenter)}` : "-";
+                    
+                    let destination = "-";
+                    if (m.type === "transfer_project") destination = `Obra: ${getProjectName(m.destinationProjectId)}`;
+                    else if (m.type === "transfer_cost_center") destination = `CC: ${getCostCenterName(m.destinationCostCenter)}`;
+                    else if (m.movementCategory === "write_off") destination = "Baixado";
+                    else if (m.movementCategory === "partial_write_off") destination = "Baixa Parcial";
+
+                    return (
+                    <TableRow key={m.uniqueKey}>
+                      <TableCell>{new Date(m.date).toLocaleDateString('pt-BR')}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-col">
+                          <span className="font-medium">{m.assetName}</span>
+                          <span className="text-xs text-muted-foreground">{m.assetNumber}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800 capitalize">
+                          {m.type?.replace(/_/g, ' ') || '-'}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-sm">{origin}</TableCell>
+                      <TableCell className="text-sm">{destination}</TableCell>
+                      <TableCell>{m.performedBy || "-"}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-col">
+                          <span className="font-medium text-sm">{m.approvedBy || (m.rejectedBy ? m.rejectedBy : "-")}</span>
+                          {(m.approvedAt || m.rejectedAt) && (
+                            <span className="text-[10px] text-slate-500">{new Date(m.approvedAt || m.rejectedAt).toLocaleString('pt-BR')}</span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                            m.status === 'completed' ? 'bg-green-100 text-green-800' : 
+                            m.status === 'pending_approval' ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                        } capitalize`}>
+                          {m.status === 'completed' ? 'Concluído' : m.status === 'pending_approval' ? 'Pendente' : m.status === 'rejected' ? 'Rejeitado' : m.status}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  )})
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+      </TabsContent>
+
+      {/* Seção de Relatório Detalhado de Inventários */}
+      <TabsContent value="inventory-report">
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2 text-slate-700 text-xl">
+              <ClipboardList className="h-6 w-6" />
+              Relatório Detalhado de Inventários
+            </CardTitle>
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={() => {
+                  const itemsToExport = completedSchedules.flatMap(schedule => {
+                    const items = schedule.results || (schedule.assetIds ? schedule.assetIds.map(id => ({ assetId: id, verified: false, newCostCenter: '' })) : []);
+                    return items.map(item => {
+                      const asset = assets.find(a => a.id === item.assetId);
+                      const currentCC = typeof asset?.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset?.costCenter;
+                      const responsibles = schedule.userIds.map(uid => users.find(u => u.id === uid)?.name).filter(Boolean).join(", ");
+                      const requester = users.find(u => String(u.id) === String(schedule.requesterId))?.name || "-";
+
+                      return {
+                        "Data": new Date(schedule.date).toLocaleDateString('pt-BR'),
+                        "Solicitante": requester,
+                        "Ativo": asset?.name || "Desconhecido",
+                        "Nº Ativo": asset?.assetNumber || "-",
+                        "Plaqueta": asset?.tagNumber || "-",
+                        "CC Anterior": currentCC || "-",
+                        "Novo CC": item.newCostCenter || "-",
+                        "Status": item.verified ? "Verificado" : "Não Verificado",
+                        "Responsável": responsibles,
+                        "Data Execução": schedule.completedAt ? new Date(schedule.completedAt).toLocaleString('pt-BR') : "-",
+                        "Aprovador": schedule.approvedBy || "-",
+                        "Data Aprovação": schedule.approvedAt ? new Date(schedule.approvedAt).toLocaleString('pt-BR') : "-",
+                        "Obs. Agendamento": schedule.notes || "-",
+                        "Obs. Item": item.observations || "-"
+                      };
+                    });
+                  });
+
+                  if (itemsToExport.length === 0) {
+                    toast.error("Não há dados de inventário para exportar.");
+                    return;
+                  }
+
+                  const ws = XLSX.utils.json_to_sheet(itemsToExport);
+                  const wb = XLSX.utils.book_new();
+                  XLSX.utils.book_append_sheet(wb, ws, "Itens_Inventariados");
+                  ws['!cols'] = [{ wch: 12 }, { wch: 20 }, { wch: 30 }, { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 25 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 30 }, { wch: 30 }];
+                  XLSX.writeFile(wb, `relatorio_itens_inventario_${new Date().toISOString().split('T')[0]}.xlsx`);
+                  toast.success("Relatório de inventário exportado!");
+              }} className="bg-green-600 hover:bg-green-700 text-white">
+                <Download className="h-4 w-4 mr-2" />
+                Exportar Excel
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="rounded-md border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Data</TableHead>
+                  <TableHead>Solicitante</TableHead>
+                  <TableHead>Ativo</TableHead>
+                  <TableHead>CC Anterior</TableHead>
+                  <TableHead>Novo CC</TableHead>
+                  <TableHead className="text-center">Status</TableHead>
+                  <TableHead>Responsável</TableHead>
+                  <TableHead>Aprovador</TableHead>
+                  <TableHead>Obs.</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {completedSchedules.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                      Nenhum item inventariado encontrado.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  completedSchedules.flatMap(schedule => {
+                    const items = schedule.results || (schedule.assetIds ? schedule.assetIds.map(id => ({ assetId: id, verified: false, newCostCenter: '' })) : []);
+                    return items.map((item, idx) => {
+                      const asset = assets.find(a => a.id === item.assetId);
+                      const currentCC = typeof asset?.costCenter === 'object' && asset.costCenter ? (asset.costCenter as any).code : asset?.costCenter;
+                      const responsibles = (schedule.userIds || []).map(uid => users.find(u => u.id === uid)?.name).filter(Boolean).join(", ");
+                      const requester = users.find(u => String(u.id) === String(schedule.requesterId))?.name || "-";
+                      
+                      return (
+                        <TableRow key={`${schedule.id}_${item.assetId}_${idx}`}>
+                          <TableCell>{new Date(schedule.date).toLocaleDateString('pt-BR')}</TableCell>
+                          <TableCell>{requester}</TableCell>
+                          <TableCell>
+                            <div className="flex flex-col">
+                              <span className="font-medium">{asset?.name || "Desconhecido"}</span>
+                              <div className="flex gap-2 text-xs text-muted-foreground">
+                                <span>{asset?.assetNumber || "-"}</span>
+                                {asset?.tagNumber && <span>| {asset.tagNumber}</span>}
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell>{getCostCenterName(currentCC)}</TableCell>
+                          <TableCell className={item.newCostCenter && item.newCostCenter !== currentCC ? "text-orange-600 font-medium" : ""}>{getCostCenterName(item.newCostCenter || currentCC)}</TableCell>
+                          <TableCell className="text-center">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
+                                item.verified ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                            }`}>
+                              {item.verified ? 'Verificado' : 'Não Verificado'}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-col">
+                              <span className="font-medium text-sm">{responsibles}</span>
+                              {schedule.completedAt && (
+                                <span className="text-[10px] text-slate-500">{new Date(schedule.completedAt).toLocaleString('pt-BR')}</span>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-col">
+                              <span className="font-medium text-sm">{schedule.approvedBy || "-"}</span>
+                              {schedule.approvedAt && (
+                                <span className="text-[10px] text-slate-500">{new Date(schedule.approvedAt).toLocaleString('pt-BR')}</span>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex flex-col gap-1 max-w-[200px] text-xs">
+                                {schedule.notes && <span className="text-muted-foreground">Agend: {schedule.notes}</span>}
+                                {item.observations && <span>Item: {item.observations}</span>}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    });
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+      </TabsContent>
+      </Tabs>
+    </div>
+  );
+}

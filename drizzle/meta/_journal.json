@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1769368590343,
+      "tag": "0000_plain_eternity",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1769369550691,
+      "tag": "0001_aberrant_metal_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1769371052582,
+      "tag": "0002_unusual_jasper_sitwell",
+      "breakpoints": true
+    }
+  ]
+}

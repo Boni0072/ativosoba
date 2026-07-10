@@ -1,0 +1,628 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { db } from "@/lib/firebase";
+import { collection, onSnapshot, updateDoc, doc } from "firebase/firestore";
+import { useAuth } from '@/_core/hooks/useAuth';
+import { getLoginUrl } from '@/const';
+import { useLocation } from 'wouter';
+import { Menu, X, LogOut, Home, FileText, DollarSign, Package, BarChart3, Landmark, Users, Bell, CheckCircle2, XCircle, ClipboardList, Eye, Check, ArrowRightLeft, TrendingDown, Power as PowerIcon, Upload, Database } from 'lucide-react';
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { toast } from "sonner";
+import SheetConfigModal from './SheetConfigModal';
+
+interface DashboardLayoutProps {
+  children: React.ReactNode;
+}
+
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  }).format(value);
+
+const sendEmailNotification = (to: string, subject: string, body: string) => {
+  const mailtoLink = `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  window.location.href = mailtoLink;
+  toast.info(`Abrindo cliente de e-mail para notificar ${to}`);
+};
+
+export default function DashboardLayout({ children }: DashboardLayoutProps) {
+  const { user: authUser, logout, isAuthenticated } = useAuth();
+  const [user, setUser] = useState<any>(authUser);
+
+  useEffect(() => {
+    if (authUser) {
+      setUser(authUser);
+    } else {
+      const storedUser = localStorage.getItem("obras_user");
+      if (storedUser) {
+        try {
+          setUser(JSON.parse(storedUser));
+        } catch (e) {
+          console.error("Erro ao recuperar usuário do storage", e);
+        }
+      }
+    }
+  }, [authUser]);
+
+  const [location, setLocation] = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [pendingInventoryCount, setPendingInventoryCount] = useState(0);
+  const [myPendingSchedules, setMyPendingSchedules] = useState<any[]>([]);
+  const [pendingInventoryApprovalCount, setPendingInventoryApprovalCount] = useState(0);
+  const [pendingInventoryApprovals, setPendingInventoryApprovals] = useState<any[]>([]);
+  const [projects, setProjects] = useState<any[]>([]);
+  const [costCenters, setCostCenters] = useState<any[]>([]);
+  const [viewProject, setViewProject] = useState<any | null>(null);
+  const [pendingMovements, setPendingMovements] = useState<any[]>([]);
+  const [dbSchedules, setDbSchedules] = useState<any[]>([]); // Estado separado para dados reais
+  const [powerBIModalOpen, setPowerBIModalOpen] = useState(false);
+  
+  // Novo estado para a chave de configuração do Power BI
+  const [powerBIConfigKey, setPowerBIConfigKey] = useState<string | undefined>(undefined);
+
+  // Event listener para abrir o modal Power BI a partir de outras páginas (ex: ImobilizadoEmAndamento)
+  useEffect(() => {
+    const handleOpenPowerBIModal = (event: any) => {
+      setPowerBIConfigKey(event.detail?.configKey); // Captura a configKey do evento
+      setPowerBIModalOpen(true);
+    };
+    window.addEventListener('open-powerbi-modal', handleOpenPowerBIModal);
+    return () => window.removeEventListener('open-powerbi-modal', handleOpenPowerBIModal);
+  }, []);
+    
+  const isFirstLoadRef = useRef(true);
+  // Estado para forçar atualização quando os mocks mudam
+  const [mockUpdateTrigger, setMockUpdateTrigger] = useState(0);
+
+  useEffect(() => {
+    const handler = () => setMockUpdateTrigger(prev => prev + 1);
+    window.addEventListener("local-mock-update", handler);
+    return () => window.removeEventListener("local-mock-update", handler);
+  }, []);
+
+  // Garante a leitura do ID independente do formato do objeto user
+  const userId = (user as any)?.id || (user as any)?.openId || (user as any)?.uid || (user as any)?.sub;
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "projects"), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setProjects(data);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "cost_centers"), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setCostCenters(data);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const roleMap: Record<string, string> = {
+    engenharia: 'Engenharia',
+    diretoria: 'Diretoria',
+    aprovacao: 'Aprovação',
+    classificacao: 'Classificação',
+  };
+
+  const userRole = (user as any)?.role;
+
+  const approvalSteps = [
+    { id: 'aguardando_classificacao', label: 'Classificação', requiredRole: 'classificacao' },
+    { id: 'aguardando_engenharia', label: 'Engenharia', requiredRole: 'engenharia' },
+    { id: 'aguardando_diretoria', label: 'Diretoria', requiredRole: 'diretoria' },
+    { id: 'aprovado', label: 'Aprovado', requiredRole: null }
+  ];
+
+  const pendingProjects = projects?.filter(p => {
+    if (!userRole) return false;
+    const pendingStatuses = ['aguardando_classificacao', 'aguardando_engenharia', 'aguardando_diretoria'];
+    if (!pendingStatuses.includes(p.status)) return false;
+    const currentStep = approvalSteps.find(s => s.id === p.status);
+    return currentStep && userRole === currentStep.requiredRole;
+  }) || [];
+
+  const prevPendingProjectsCountRef = useRef(0);
+
+  useEffect(() => {
+    const currentCount = pendingProjects.length;
+    if (currentCount > prevPendingProjectsCountRef.current) {
+      const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3");
+      audio.play().catch(e => console.log("Audio play failed (autoplay policy)", e));
+    }
+    prevPendingProjectsCountRef.current = currentCount;
+  }, [pendingProjects.length]);
+
+  const prevPendingInventoryApprovalIds = useRef<string[]>([]);
+  const prevPendingMovementIds = useRef<string[]>([]);
+  const prevPendingScheduleIds = useRef<string[]>([]);
+
+  useEffect(() => {
+    // Efeito 1: Apenas escuta o Banco de Dados Real
+    if (!userId) return;
+    const unsubscribe = onSnapshot(collection(db, "inventory_schedules"),
+      {
+      next: (snapshot) => {
+        setDbSchedules(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      },
+      error: (error) => {
+        console.error("Erro ao sincronizar inventários:", error);
+      }
+    });
+    return () => unsubscribe();
+  }, [userId]);
+
+  // Proteção de rota e Redirecionamento automático
+  useEffect(() => {
+    if (isAuthenticated && user && location !== '/notifications') {
+      const role = (user as any)?.role;
+      if (role === 'admin') return;
+
+      const userAllowedPages = (user as any)?.allowedPages || [];
+      
+      // Se o usuário está no root ou no dashboard mas não tem permissão para o dashboard
+      if (location === '/' || location === '/dashboard') {
+        if (!userAllowedPages.includes('dashboard')) {
+          const firstAllowed = navItems.find(item => userAllowedPages.includes(item.id));
+          if (firstAllowed) {
+            setLocation(firstAllowed.path);
+          }
+        }
+      } else if (location === '/imobilizado' || location === '/connections' || location === '/nfe-query') {
+        // Permite acesso às páginas de imobilizado, conexões e consulta NF-e para todos os usuários autenticados
+        // Não redireciona, apenas permite o acesso
+      } else {
+        // Verifica se a página atual é permitida
+        const currentItem = navItems.find(item => item.path === location);
+        if (currentItem && !userAllowedPages.includes(currentItem.id)) {
+           const firstAllowed = navItems.find(item => userAllowedPages.includes(item.id));
+           if (firstAllowed) setLocation(firstAllowed.path);
+        }
+      }
+    }
+  }, [location, user, isAuthenticated]);
+
+  useEffect(() => {
+      // Efeito 2: Processa Mocks + Dados Reais (Roda sempre que Mocks mudam ou DB muda)
+      // --- MOCK INJECTION PARA O DASHBOARD ---
+      // Garante que o sino mostre a mesma contagem que a página de notificações
+      const processedMocks = JSON.parse(localStorage.getItem("mock_processed_schedules") || "[]");
+      const statusOverrides = JSON.parse(localStorage.getItem("mock_status_overrides") || "{}");
+
+      const mockSchedulesRaw = userId ? [
+        {
+          id: "mock-schedule-pending",
+          requesterId: userId,
+          assetIds: ["mock-asset-1", "mock-asset-2"],
+          userIds: [userId],
+          date: new Date().toISOString(),
+          notes: "Inventário Mensal (Simulação)",
+          status: 'pending',
+          createdAt: new Date().toISOString()
+        },
+        {
+          id: "mock-schedule-approval",
+          requesterId: userId,
+          assetIds: ["mock-asset-3"],
+          userIds: ["user-other"],
+          date: new Date().toISOString(),
+          notes: "Aguardando Aprovação do Gestor (Simulação)",
+          status: 'waiting_approval',
+          results: [{ assetId: "mock-asset-3", verified: true, newCostCenter: "CC-TEST" }],
+          createdAt: new Date().toISOString()
+        }
+      ] : [];
+
+      // Aplica filtros de estado (Aprovado/Rejeitado) aos mocks
+      const mockSchedules = mockSchedulesRaw.map(s => {
+          if (statusOverrides[s.id]) {
+              return { ...s, status: statusOverrides[s.id] };
+          }
+          return s;
+      }).filter((s: any) => !processedMocks.includes(s.id));
+
+      const schedules = [...dbSchedules, ...mockSchedules];
+      
+      const mySchedules = schedules.filter((s: any) =>
+        s.status === 'pending' && Array.isArray(s.userIds) && s.userIds.map(String).includes(String(userId))
+      );
+      setMyPendingSchedules(mySchedules);
+      setPendingInventoryCount(mySchedules.length);
+
+      // Lógica de Notificação para Novos Agendamentos (Execução)
+      const currentScheduleIds = mySchedules.map((s: any) => s.id);
+      const newSchedules = mySchedules.filter((s: any) => !prevPendingScheduleIds.current.includes(s.id));
+
+      // Só notifica se não for a primeira carga e houver novos itens
+      if (newSchedules.length > 0 && !isFirstLoadRef.current && user) {
+           const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3");
+           audio.play().catch(e => console.log("Audio play failed", e));
+
+           const subject = `Novo Inventário Agendado: ${newSchedules.length} tarefa(s)`;
+           const body = `Olá ${user.name || 'Usuário'},\n\nVocê foi designado para realizar novos inventários.\n\nDetalhes:\n${newSchedules.map((s: any) => `- Data: ${s.date?.toDate ? s.date.toDate().toLocaleDateString('pt-BR') : new Date(s.date).toLocaleDateString('pt-BR')}`).join('\n')}\n\nAcesse o sistema para iniciar a contagem.`;
+
+           toast.info(subject, {
+             description: "Você tem novas contagens para realizar.",
+             duration: 8000,
+             action: {
+               label: "Notificar por E-mail",
+               onClick: () => user?.email && sendEmailNotification(user.email, subject, body)
+             }
+           });
+      }
+      
+      prevPendingScheduleIds.current = currentScheduleIds;
+
+      const myApprovals = schedules.filter((s: any) => 
+        s.status === 'waiting_approval' && (
+          s.requesterId && userId && String(s.requesterId) === String(userId)
+        )
+      );
+      setPendingInventoryApprovals(myApprovals);
+
+      const currentApprovalIds = myApprovals.map(a => a.id);
+      const newApprovals = myApprovals.filter(a => !prevPendingInventoryApprovalIds.current.includes(a.id));
+
+      if (newApprovals.length > 0 && !isFirstLoadRef.current && user) {
+           const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3");
+           audio.play().catch(e => console.log("Audio play failed", e));
+
+           const subject = `Você tem ${newApprovals.length} nova(s) aprovação(ões) de inventário`;
+           const body = `Olá ${user.name || 'Usuário'},\n\nExistem novas solicitações de aprovação de inventário no sistema.\n\nDetalhes:\n${newApprovals.map(s => `- Inventário de ${s.date?.toDate ? s.date.toDate().toLocaleDateString('pt-BR') : new Date(s.date).toLocaleDateString('pt-BR')} com ${s.assetIds.length} ativos.`).join('\n')}\n\nPor favor, acesse o sistema para revisar.\n\nLink: ${window.location.origin}/inventory`;
+
+           toast.info(subject, {
+             action: {
+               label: "Notificar por E-mail",
+               onClick: () => user?.email && sendEmailNotification(user.email, subject, body)
+             }
+           });
+      }
+
+      prevPendingInventoryApprovalIds.current = currentApprovalIds;
+      setPendingInventoryApprovalCount(myApprovals.length);
+      isFirstLoadRef.current = false;
+  }, [dbSchedules, userId, user, mockUpdateTrigger]); // Recalcula quando DB ou Mock muda
+
+  useEffect(() => {
+    if (!userId || !costCenters.length || !user) return;
+
+    const q = collection(db, "asset_movements");
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+        const movements = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        
+        const myPendingMovements = movements.filter((mov: any) => {
+            if (mov.status !== 'pending_approval' || mov.type !== 'transfer_cost_center') return false;
+            
+            const destCC = costCenters.find(cc => cc.code === mov.destinationCostCenter);
+            if (destCC) {
+                return destCC.responsible === user.name || destCC.responsibleEmail === user.email;
+            }
+            return false;
+        });
+
+        const currentMovementIds = myPendingMovements.map(m => m.id);
+        const newMovements = myPendingMovements.filter(m => !prevPendingMovementIds.current.includes(m.id));
+
+        if (newMovements.length > 0 && user) {
+            const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3");
+            audio.play().catch(e => console.log("Audio play failed", e));
+
+            const subject = `Você tem ${newMovements.length} nova(s) aprovação(ões) de movimentação de ativo`;
+            const body = `Olá ${user.name || 'Usuário'},\n\nExistem novas solicitações de aprovação de movimentação de ativos no sistema.\n\nDetalhes:\n${newMovements.map((m: any) => `- Ativo: ${m.assetName || m.assetNumber || 'N/A'} para o CC ${m.destinationCostCenter || 'N/A'}.`).join('\n')}\n\nPor favor, acesse o sistema para revisar.\n\nLink: ${window.location.origin}/asset-movements`;
+
+            toast.info(subject, {
+              action: {
+                label: "Notificar por E-mail",
+                onClick: () => sendEmailNotification(user.email, subject, body)
+              }
+            });
+        }
+        prevPendingMovementIds.current = currentMovementIds;
+        setPendingMovements(myPendingMovements);
+    });
+    return () => unsubscribe();
+  }, [userId, user, costCenters]);
+
+  const handleApprove = async (project: any) => {
+    let nextStatus = '';
+    if (project.status === 'aguardando_classificacao') nextStatus = 'aguardando_engenharia';
+    else if (project.status === 'aguardando_engenharia') nextStatus = 'aguardando_diretoria';
+    else if (project.status === 'aguardando_diretoria') nextStatus = 'aprovado';
+
+    if (nextStatus) {
+      const historyEntry = {
+        status: nextStatus,
+        date: new Date().toISOString(),
+        user: user?.name || "Usuário",
+        role: (user as any)?.role || "",
+        notes: "Aprovado via Dashboard"
+      };
+      const newHistory = [...(project.approvalHistory || []), historyEntry];
+      await updateDoc(doc(db, "projects", project.id), { status: nextStatus, approvalHistory: newHistory });
+      const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3");
+      audio.play().catch(e => console.error("Audio play failed", e));
+      toast.success(`Projeto ${project.name} aprovado!`);
+    }
+  };
+
+  const handleReject = async (project: any) => {
+    const historyEntry = {
+      status: 'rejeitado',
+      date: new Date().toISOString(),
+      user: user?.name || "Usuário",
+      role: (user as any)?.role || "",
+      notes: "Rejeitado via Dashboard"
+    };
+    const newHistory = [...(project.approvalHistory || []), historyEntry];
+    await updateDoc(doc(db, "projects", project.id), { status: 'rejeitado', approvalHistory: newHistory });
+    const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3");
+    audio.play().catch(e => console.error("Audio play failed", e));
+    toast.success(`Projeto ${project.name} rejeitado.`);
+  };
+
+  const totalNotifications = pendingProjects.length + pendingInventoryCount + pendingInventoryApprovalCount + pendingMovements.length;
+
+  useEffect(() => {
+    const baseTitle = "Control Inventário";
+    let interval: ReturnType<typeof setInterval>;
+
+    if (totalNotifications > 0) {
+      let toggle = false;
+      interval = setInterval(() => {
+        document.title = toggle 
+          ? `🔴 ALERTA (${totalNotifications}) - AÇÃO NECESSÁRIA` 
+          : baseTitle;
+        toggle = !toggle;
+      }, 1000);
+    } else {
+      document.title = baseTitle;
+    }
+
+    return () => {
+      clearInterval(interval);
+      document.title = baseTitle;
+    };
+  }, [totalNotifications]);
+
+  const navItems = [
+    { id: 'dashboard', label: 'Dashboard', icon: Home, path: '/dashboard' },
+    { id: 'projects', label: 'Obras', icon: FileText, path: '/projects' },
+    { id: 'budgets', label: 'Budgets', icon: DollarSign, path: '/budgets' },
+    { id: 'assets', label: 'Cadastro de Ativos', icon: Package, path: '/assets' },
+    { id: 'asset-movements', label: 'Movimentações', icon: ArrowRightLeft, path: '/asset-movements', notificationCount: pendingMovements.length },
+    { id: 'inventory', label: 'Inventários', icon: ClipboardList, path: '/inventory', notificationCount: pendingInventoryCount + pendingInventoryApprovalCount },
+    { id: 'import', label: 'Importação de Dados', icon: Upload, path: '/import' },
+    { id: 'notifications', label: 'Notificações', icon: Bell, path: '/notifications', notificationCount: totalNotifications, isNotification: true },
+    { id: 'reports', label: 'Relatórios', icon: BarChart3, path: '/reports' },
+    { id: 'capex-report', label: 'Relatório CAPEX', icon: DollarSign, path: '/capex-report' },
+    { id: 'imobilizado', label: 'Capex em Andamento', icon: TrendingDown, path: '/imobilizado' },
+    { id: 'expenses', label: 'Despesas', icon: DollarSign, path: '/expenses' },
+    { id: 'nfe', label: 'Consulta NF-e', icon: FileText, path: '/nfe' },
+    { id: 'calculations', label: 'Cálculos', icon: BarChart3, path: '/calculations' },
+    { id: 'showcase', label: 'Showcase', icon: Package, path: '/showcase' },
+    { id: 'nfe-query', label: 'Consulta NF ', icon: FileText, path: '/nfe-query' }, // Restaurado
+    { id: 'connections', label: 'Conexões', icon: Database, path: '/connections' },
+    { id: 'accounting', label: 'Estrutura Contábil', icon: Landmark, path: '/accounting' },
+    { id: 'capex', label: 'CAPEX', icon: TrendingDown, path: '/capex' },
+    { id: 'users', label: 'Usuários', icon: Users, path: '/users' },
+  ];
+
+  const allowedPages = (user as any)?.allowedPages;
+
+  const visibleNavItems = navItems.filter(item => {
+    const role = (user as any)?.role;
+    // Apenas Admin vê tudo. Diretoria deve respeitar as permissões configuradas (allowedPages).
+    if (role === 'admin') return true;
+
+    // Se allowedPages não existe, o usuário não tem permissões explícitas.
+    if (!allowedPages || !Array.isArray(allowedPages)) return false;
+
+    // Sempre mostra os itens "Imobilizado em Andamento", "Conexões" e "Consulta NF-e por Chave" no menu
+    if (item.id === 'imobilizado' || item.id === 'connections' || item.id === 'nfe-query') return true;
+
+    // Permite acesso apenas se a página estiver na lista de permissões.
+    return allowedPages.includes(item.id);
+  });
+
+  const steps = [
+    { id: 'aguardando_classificacao', label: 'Classificação', color: 'bg-blue-500', border: 'border-blue-500', text: 'text-blue-600', ring: 'ring-blue-200' },
+    { id: 'aguardando_engenharia', label: 'Engenharia', color: 'bg-yellow-500', border: 'border-yellow-500', text: 'text-yellow-600', ring: 'ring-yellow-200' },
+    { id: 'aguardando_diretoria', label: 'Diretoria', color: 'bg-orange-500', border: 'border-orange-500', text: 'text-orange-600', ring: 'ring-orange-200' },
+    { id: 'aprovado', label: 'Aprovado', color: 'bg-green-500', border: 'border-green-500', text: 'text-green-600', ring: 'ring-green-200' }
+  ];
+
+  return (
+    <div className="flex h-screen bg-background">
+      {/* Sidebar */}
+      <div className={`${sidebarOpen ? 'w-64' : 'w-0'} bg-[#0b543e] text-white transition-all duration-300 flex flex-col border-r border-[#a5b3c4] overflow-hidden`}>
+        {/* Logo */}
+        <div className="p-4 border-b border-[#a5b3c4] flex items-center justify-center relative">
+          {sidebarOpen && (
+            <div className="flex flex-col items-center gap-2">
+              <img src="/oba.svg" alt="Ícone Oba" className="w-48 h-48 object-contain" />
+              <h2 className="text-xl font-bold">Controle de Oba</h2>
+            </div>
+          )}
+          <button
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            className={`p-1 hover:bg-white/10 rounded ${sidebarOpen ? 'absolute right-4' : ''}`}
+          >
+            {sidebarOpen ? <X size={20} /> : <Menu size={20} />}
+          </button>
+        </div>
+
+        {/* Navigation */}
+        <nav className="flex-1 p-4 space-y-2">
+          {visibleNavItems.map((item) => {
+            const Icon = item.icon;
+            const isActive = location === item.path;
+            const hasNotification = item.notificationCount && item.notificationCount > 0;
+
+            return (
+              <button
+                key={item.path}
+                onClick={() => setLocation(item.path)}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition ${
+                  isActive
+                      ? (item.isNotification ? 'bg-red-500 text-white font-bold shadow-sm' : 'bg-white text-[#F5821F] font-bold shadow-sm')
+                    : 'text-white/90 hover:bg-white/10'
+                }`}
+              >
+                <Icon size={20} className={hasNotification ? "text-orange-400" : ""} />
+                {sidebarOpen && <span className={hasNotification ? "text-orange-400 font-bold" : ""}>{item.label}</span>}
+                {sidebarOpen && hasNotification && (
+                  <span className="ml-auto bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full animate-pulse">
+                      {item.notificationCount} 
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+
+      </div>
+
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col overflow-hidden text-slate-700">
+        <Dialog open={!!viewProject} onOpenChange={(open) => !open && setViewProject(null)}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Detalhes do Projeto</DialogTitle>
+            </DialogHeader>
+            {viewProject && (
+              <div className="space-y-4">
+                <div className="py-4 mb-36">
+                  <h4 className="text-sm font-semibold text-slate-700 mb-6">Fluxo de Aprovação</h4>
+                  <div className="relative flex items-center justify-between px-4">
+                    <div className="absolute left-0 top-4 transform -translate-y-1/2 w-full h-1 bg-slate-100 -z-10 rounded-full" />
+                    <div 
+                      className={`absolute left-0 top-4 transform -translate-y-1/2 h-1 -z-10 transition-all duration-500 rounded-full ${
+                        steps.findIndex(s => s.id === viewProject.status) >= 0 ? steps[steps.findIndex(s => s.id === viewProject.status)].color : 'bg-blue-600'
+                      }`} 
+                      style={{ width: `${(Math.max(0, steps.findIndex(s => s.id === viewProject.status)) / (steps.length - 1)) * 100}%` }} 
+                    />
+                    {steps.map((step, index) => {
+                      const currentStepIndex = steps.findIndex(s => s.id === viewProject.status);
+                      const isCompletedStep = index <= currentStepIndex;
+                      const isCurrent = index === currentStepIndex;
+                      
+                      const approvalInfo = viewProject.approvalHistory
+                        ? viewProject.approvalHistory.slice().reverse().find((h: any) => h.status === steps[index].id)
+                        : null;
+
+                      return (
+                        <div key={step.id} className="flex flex-col items-center group relative">
+                          <div 
+                            className={`
+                              w-8 h-8 rounded-full border-2 z-10 transition-all duration-300 flex items-center justify-center
+                              ${isCompletedStep 
+                                ? `${step.color} ${step.border} shadow-md text-white scale-110` 
+                                : 'bg-white border-slate-300 text-slate-400'
+                              }
+                            `}
+                          >
+                            {isCompletedStep ? <Check className="w-5 h-5" /> : <span className="text-xs font-semibold">{index + 1}</span>}
+                          </div>
+                          <span className={`absolute -bottom-10 text-base font-medium whitespace-nowrap ${isCurrent ? step.text : 'text-slate-500'}`}>
+                            {step.label}
+                          </span>
+                          {approvalInfo && (
+                            <div className="absolute top-24 flex flex-col items-center w-40 text-center z-20">
+                              <span className="text-sm font-bold text-slate-700 leading-tight">{approvalInfo.user}</span>
+                              <span className="text-xs text-slate-500 leading-tight">{new Date(approvalInfo.date).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="border-b border-slate-200 my-6" />
+
+                <div>
+                  <h4 className="font-semibold text-sm text-gray-500">Descrição</h4>
+                  <p className="text-slate-700">{viewProject.description || "Sem descrição"}</p>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <h4 className="font-semibold text-sm text-gray-500">Centro de Custo</h4>
+                    <p className="text-slate-700">{viewProject.costCenter || "-"}</p>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold text-sm text-gray-500">Data de Início</h4>
+                    <p className="text-slate-700">{new Date(viewProject.startDate).toLocaleDateString("pt-BR")}</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <h4 className="font-semibold text-sm text-gray-500">Capex</h4>
+                    <p className="text-slate-700 font-mono">{formatCurrency(Number(viewProject.plannedCapex || 0))}</p>
+                  </div>
+                  <div>
+                    <h4 className="font-semibold text-sm text-gray-500">Opex</h4>
+                    <p className="text-slate-700 font-mono">{formatCurrency(Number(viewProject.plannedOpex || 0))}</p>
+                  </div>
+                </div>
+                <div>
+                  <h4 className="font-semibold text-sm text-gray-500">Valor Planejado</h4>
+                  <p className="text-slate-700 font-mono">{formatCurrency(Number(viewProject.plannedValue || 0))}</p>
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+        {/* Header */}
+        <header className="bg-white border-b border-border px-6 py-4 shadow-sm flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            {!sidebarOpen && (
+              <button onClick={() => setSidebarOpen(true)} className="p-2 hover:bg-slate-100 rounded-full transition-colors">
+                <Menu size={24} className="text-slate-700" />
+              </button>
+            )}
+            <h1 className="text-2xl font-bold text-slate-700">Sistema de Gestão Oba</h1>
+          </div>
+          <div className="flex items-center gap-4">
+            
+            {/* Notifications */}
+            <button onClick={() => setLocation('/notifications')} className="relative p-2 text-slate-600 hover:bg-slate-100 rounded-full transition group">
+              <Bell size={20} className={totalNotifications > 0 ? "text-orange-600 animate-pulse" : ""} />
+              {totalNotifications > 0 && (
+                <span className="absolute top-0 right-0 w-4 h-4 bg-red-500 text-white text-[10px] font-bold flex items-center justify-center rounded-full animate-pulse">
+                  {totalNotifications}
+                </span>
+              )}
+            </button>
+
+            <div className="text-right">
+              <p className="text-sm font-semibold text-slate-700">{user?.name || user?.email}</p>
+              <p className="text-xs text-slate-500">Perfil: {(user as any)?.role ? (roleMap[(user as any).role] || (user as any).role) : 'Usuário'}</p>
+            </div>
+            <button
+              onClick={() => {
+                localStorage.removeItem("obras_token");
+                localStorage.removeItem("obras_user");
+                logout();
+                window.location.href = "/login";
+              }}
+              className="flex items-center gap-2 px-3 py-2 bg-slate-100 hover:bg-slate-200 rounded-lg transition text-sm text-slate-700"
+            >
+              <LogOut size={18} />
+              <span>Sair</span>
+            </button>
+          </div>
+        </header>
+
+        {/* Content Area */}
+        <main className="flex-1 overflow-auto bg-gray-50">
+          <div className="p-6">
+            {children}
+          </div>
+        </main>
+        <SheetConfigModal open={powerBIModalOpen} onOpenChange={setPowerBIModalOpen} configKey={powerBIConfigKey} />
+      </div>
+    </div>
+  );
+}

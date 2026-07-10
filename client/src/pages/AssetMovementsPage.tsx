@@ -1,0 +1,1153 @@
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import { db } from "@/lib/firebase"; // Keep this import for db
+import { useAuth } from "@/_core/hooks/useAuth";
+import { collection, onSnapshot, addDoc, updateDoc, doc, query, orderBy, writeBatch, where } from "firebase/firestore";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ArrowRightLeft, History, TriangleAlert as AlertTriangle, Search, Plus, Circle as XCircle, Truck, ArrowLeft, Download, Clock, Check, X, ThumbsUp, ThumbsDown, QrCode } from "lucide-react";
+import { toast } from "sonner";
+import { Link } from "wouter";
+import * as XLSX from "xlsx";
+
+export default function AssetMovementsPage() {
+  const { user } = useAuth();
+
+  const [assets, setAssets] = useState<any[]>([]);
+  const [projects, setProjects] = useState<any[]>([]);
+  const [movements, setMovements] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [costCenters, setCostCenters] = useState<any[]>([]);
+  const [viewingMovement, setViewingMovement] = useState<any | null>(null);
+  const [scanInput, setScanInput] = useState("");
+  const [addresses, setAddresses] = useState<{ requester?: string; approver?: string; rejecter?: string }>({});
+  const [loadingAddresses, setLoadingAddresses] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+  const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const scanInputRef = useRef<HTMLInputElement>(null);
+
+  const assetsRef = useRef(assets);
+  useEffect(() => {
+    assetsRef.current = assets;
+  }, [assets]);
+
+  // Buscar Ativos
+  useEffect(() => {
+    const q = query(
+      collection(db, "assets"),
+      where("status", "not-in", ["baixado", "em_transito"]) // Filtra ativos com status 'baixado' ou 'em_transito' diretamente no banco
+    );
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setAssets(data);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Buscar Obras
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "projects"), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setProjects(data);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Buscar Centros de Custo
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "cost_centers"), (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setCostCenters(data);
+    });
+    return () => unsubscribe();
+  }, []);
+  // Buscar Histórico de Movimentações
+  useEffect(() => {
+    const q = query(collection(db, "asset_movements"), orderBy("date", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setMovements(data);
+      setIsLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const fetchAddress = async (location: { lat: number; lng: number } | null) => {
+        if (!location) return null;
+        try {
+            const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${location.lat}&lon=${location.lng}&addressdetails=1`);
+            if (!response.ok) return "Endereço não encontrado";
+            const data = await response.json();
+            return data.display_name || "Endereço não encontrado";
+        } catch (error) {
+            console.error("Error fetching address:", error);
+            return "Erro ao buscar endereço";
+        }
+    };
+
+    if (viewingMovement) {
+        setLoadingAddresses(true);
+        const fetchAll = async () => {
+            const requester = await fetchAddress(viewingMovement.requesterLocation);
+            const approver = await fetchAddress(viewingMovement.approverLocation);
+            const rejecter = await fetchAddress(viewingMovement.rejecterLocation);
+            
+            const newAddresses: { requester?: string; approver?: string; rejecter?: string } = {};
+            if (requester) newAddresses.requester = requester;
+            if (approver) newAddresses.approver = approver;
+            if (rejecter) newAddresses.rejecter = rejecter;
+            
+            setAddresses(newAddresses);
+            setLoadingAddresses(false);
+        };
+        fetchAll();
+    }
+}, [viewingMovement]);
+
+  useEffect(() => {
+    if (isModalOpen) {
+      setTimeout(() => scanInputRef.current?.focus(), 100);
+    }
+  }, [isModalOpen]);
+
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    let interval: NodeJS.Timeout | undefined;
+
+    if (isScanning) {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        toast.error("Seu navegador não suporta acesso à câmera ou a conexão não é segura (HTTPS).");
+        setIsScanning(false);
+        return;
+      }
+
+      // Iniciamos a captura imediatamente para reduzir a latência percebida
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+        .then(s => {
+            stream = s;
+            if (videoRef.current) {
+              videoRef.current.srcObject = stream;
+              videoRef.current.play().catch(console.error);
+            }
+
+            if (!('BarcodeDetector' in window)) {
+              toast.error("Leitor de barras não suportado neste navegador. Use o Chrome ou Edge em modo seguro (HTTPS).");
+              setIsScanning(false);
+              return;
+            }
+
+            const BarcodeDetector = (window as any).BarcodeDetector;
+            try {
+              // Otimização: Focamos nos formatos mais prováveis para ganhar velocidade na inicialização
+              const detector = new BarcodeDetector({ 
+                formats: ['qr_code', 'code_128', 'ean_13', 'code_39'] 
+              });
+              interval = setInterval(async () => {
+                if (videoRef.current && videoRef.current.readyState === 4) {
+                  try {
+                    const barcodes = await detector.detect(videoRef.current);
+                    if (barcodes.length > 0) {
+                      const rawValue = barcodes[0].rawValue;
+                      const asset = assetsRef.current.find(a =>
+                        (a.assetNumber && a.assetNumber === rawValue) ||
+                        (a.tagNumber && a.tagNumber === rawValue)
+                      );
+                      if (asset) {
+                        handleAssetSelect(asset.id);
+                        setIsScanning(false);
+                        new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3").play().catch(() => {});
+                        toast.success(`Ativo identificado: ${asset.name}`);
+                      } else {
+                        toast.error(`Código lido (${rawValue}), mas ativo não encontrado.`);
+                      }
+                    }
+                  } catch (e) {}
+                }
+              }, 200); // Frequência de leitura aumentada para 5 vezes por segundo
+            } catch (e) {
+              console.warn("BarcodeDetector error", e);
+              setIsScanning(false);
+            }
+          })
+          .catch(err => {
+            console.error("Erro câmera", err);
+            toast.error("Erro ao acessar câmera. Verifique as permissões do navegador.");
+            setIsScanning(false);
+          });
+    }
+
+    return () => {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      if (interval) clearInterval(interval);
+    };
+  }, [isScanning]);
+
+  const handleApproveMovement = async (movement: any) => {
+    if (!movement.assetId && (!movement.assets || movement.assets.length === 0)) {
+      toast.error("Nenhum ativo encontrado na movimentação.");
+      return;
+    }
+
+    const approverLocation = await new Promise<{ lat: number; lng: number } | null>((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+        () => resolve(null),
+      );
+    });
+
+    try {
+      const batch = writeBatch(db);
+      
+      const assetsToProcess = movement.isBatch ? movement.assets : [{ assetId: movement.assetId }];
+
+      assetsToProcess.forEach((item: any) => {
+          const assetRef = doc(db, "assets", item.assetId);
+          const assetUpdate: any = { status: 'concluido' };
+          
+          if (movement.type === 'transfer_project') {
+            assetUpdate.projectId = movement.destinationProjectId;
+          } else if (movement.type === 'transfer_cost_center') {
+            assetUpdate.costCenter = movement.destinationCostCenter;
+          }
+          batch.update(assetRef, assetUpdate);
+      });
+
+      const movementUpdate = {
+        status: 'completed',
+        approvedBy: user?.name || 'Sistema',
+        approvedAt: new Date().toISOString(),
+        approverLocation,
+      };
+      
+      const movementRef = doc(db, "asset_movements", movement.id);
+      batch.update(movementRef, movementUpdate);
+      await batch.commit();
+
+      toast.success("Recebimento de ativo aprovado com sucesso!");
+    } catch (error) {
+      console.error("Erro ao aprovar recebimento:", error);
+      toast.error("Falha ao aprovar o recebimento do ativo.");
+    }
+  };
+
+  const handleRejectMovement = async (movement: any) => {
+    if (!movement.assetId && (!movement.assets || movement.assets.length === 0)) {
+      toast.error("Nenhum ativo encontrado na movimentação.");
+      return;
+    }
+
+    const rejecterLocation = await new Promise<{ lat: number; lng: number } | null>((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+        () => resolve(null),
+      );
+    });
+
+    try {
+      const batch = writeBatch(db);
+      const assetsToProcess = movement.isBatch ? movement.assets : [{ assetId: movement.assetId }];
+
+      assetsToProcess.forEach((item: any) => {
+          const assetRef = doc(db, "assets", item.assetId);
+          batch.update(assetRef, { status: 'concluido' });
+      });
+
+      const movementUpdate = {
+        status: 'rejected',
+        rejectedBy: user?.name || 'Sistema',
+        rejectedAt: new Date().toISOString(),
+        rejecterLocation,
+      };
+      const movementRef = doc(db, "asset_movements", movement.id);
+      batch.update(movementRef, movementUpdate);
+      await batch.commit();
+
+      toast.warning("Recebimento de ativo foi rejeitado.");
+    } catch (error) {
+      console.error("Erro ao rejeitar recebimento:", error);
+      toast.error("Falha ao rejeitar o recebimento do ativo.");
+    }
+  };
+
+  const [formData, setFormData] = useState({
+    assetId: "",
+    type: "",
+    date: new Date().toISOString().split("T")[0],
+    destinationProjectId: "",
+    destinationCostCenter: "",
+    value: "",
+    percentage: "",
+    reason: "",
+  });
+
+  const MOVEMENT_TYPES = [
+    { value: "transfer_project", label: "Transferência entre Obras", type: "transfer" },
+    { value: "transfer_cost_center", label: "Transferência de Centro de Custo", type: "transfer" },
+    { value: "write_off_sale", label: "Baixa por Venda", type: "write_off" },
+    { value: "write_off_obsolescence", label: "Baixa por Obsolescência", type: "write_off" },
+    { value: "write_off_theft", label: "Baixa por Roubo/Furto", type: "write_off" },
+    { value: "write_off_damage", label: "Baixa por Danos", type: "write_off" },
+    { value: "write_off_partial", label: "Baixa Parcial", type: "partial_write_off" },
+  ];
+
+  const handleAssetSelect = (assetId: string) => {
+    if (!selectedAssetIds.includes(assetId)) {
+      setSelectedAssetIds(prev => [...prev, assetId]);
+    } else {
+      toast.info("Ativo já adicionado à lista.");
+      return;
+    }
+
+    const asset = assets.find(a => a.id === assetId);
+    // Preenche destino apenas se for o primeiro ativo selecionado
+    if (asset && selectedAssetIds.length === 0) {
+      setFormData(prev => ({
+        ...prev,
+        destinationProjectId: asset.projectId || "",
+        destinationCostCenter: typeof asset.costCenter === 'object' ? asset.costCenter.code : asset.costCenter || "",
+      }));
+    }
+  };
+
+  const handleRemoveAsset = (id: string) => {
+    setSelectedAssetIds(prev => prev.filter(assetId => assetId !== id));
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (selectedAssetIds.length === 0 || !formData.type) {
+      toast.error("Selecione pelo menos um ativo e o tipo de movimentação.");
+      return;
+    }
+
+    const requesterLocation = await new Promise<{ lat: number; lng: number } | null>((resolve) => {
+      if (!navigator.geolocation) {
+        resolve(null);
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+        (err) => {
+          toast.warning("Não foi possível obter a geolocalização. A movimentação será registrada sem ela.");
+          resolve(null);
+        },
+      );
+    });
+
+    try {
+      const assetsToMove = selectedAssetIds.map(id => assets.find(a => a.id === id)).filter(Boolean);
+      if (assetsToMove.length === 0) return;
+
+      const movementType = MOVEMENT_TYPES.find(t => t.value === formData.type);
+      const isTransfer = movementType?.type === 'transfer';
+
+      const movementData = {
+          ...formData,
+          // Dados consolidados ou do primeiro item para compatibilidade visual na lista
+          assetId: assetsToMove.length === 1 ? assetsToMove[0].id : null,
+          assetName: assetsToMove.length === 1 ? assetsToMove[0].name : `${assetsToMove.length} Ativos (Lote)`,
+          assetNumber: assetsToMove.length === 1 ? assetsToMove[0].assetNumber : "-",
+          isBatch: assetsToMove.length > 1,
+          assets: assetsToMove.map(a => ({
+              assetId: a.id,
+              assetName: a.name,
+              assetNumber: a.assetNumber,
+              originProjectId: a.projectId || null,
+              originCostCenter: typeof a.costCenter === 'object' ? a.costCenter.code : a.costCenter || null,
+              value: a.value
+          })),
+          
+          originProjectId: assetsToMove[0].projectId || null,
+          originCostCenter: typeof assetsToMove[0].costCenter === 'object' ? assetsToMove[0].costCenter.code : assetsToMove[0].costCenter || null,
+          movementCategory: movementType?.type || "other",
+          createdAt: new Date().toISOString(),
+          performedBy: user?.name || "Sistema",
+          requesterLocation,
+          status: isTransfer ? 'pending_approval' : 'completed',
+      };
+
+      // 1. Registrar Movimentação Única
+      await addDoc(collection(db, "asset_movements"), movementData);
+
+      // 2. Atualizar Ativos (Batch para performance)
+      const batch = writeBatch(db);
+      
+      assetsToMove.forEach(asset => {
+          const assetRef = doc(db, "assets", asset.id);
+          const updateData: any = {};
+          
+          if (isTransfer) {
+            updateData.status = "em_transito";
+          } else if (movementType?.type === "write_off") {
+            updateData.status = "baixado";
+            updateData.writeOffDate = formData.date;
+            updateData.writeOffReason = formData.reason;
+            updateData.writeOffValue = formData.value;
+          } else if (movementType?.type === "partial_write_off") {
+            const currentValue = Number(asset.value || 0);
+            const reduction = Number(formData.value || 0);
+            const finalReduction = formData.percentage 
+              ? (currentValue * (Number(formData.percentage) / 100)) 
+              : reduction;
+            updateData.value = Math.max(0, currentValue - finalReduction);
+          }
+          if (Object.keys(updateData).length > 0) {
+              batch.update(assetRef, updateData);
+          }
+      });
+
+      await batch.commit();
+
+      toast.success(`Movimentação registrada para ${selectedAssetIds.length} ativos!`);
+      setIsModalOpen(false);
+      setSelectedAssetIds([]);
+      setFormData({
+        assetId: "",
+        type: "",
+        date: new Date().toISOString().split("T")[0],
+        destinationProjectId: "",
+        destinationCostCenter: "",
+        value: "",
+        percentage: "",
+        reason: "",
+      });
+    } catch (error) {
+      console.error(error);
+      toast.error("Erro ao registrar movimentação.");
+    }
+  };
+
+  const getProjectName = (id: string) => projects.find(p => String(p.id) === String(id))?.name || "—";
+  const getProjectLocation = (id: string) => projects.find(p => String(p.id) === String(id))?.location || "";
+  const getCostCenterName = (code: string) => {
+    const cc = costCenters?.find((c: any) => c.code === code);
+    return cc ? `${cc.code} - ${cc.name}` : code || "—";
+  };
+  const getCostCenterResponsible = (code: string) => {
+    if (!code) return "";
+    const cc = costCenters?.find((c: any) => c.code === code);
+    return cc?.responsible || "";
+  };
+  const getCostCenterDepartment = (code: string) => {
+    if (!code) return "";
+    const cc = costCenters?.find((c: any) => c.code === code);
+    return cc?.department || "";
+  };
+
+  const statusLabels: { [key: string]: string } = {
+    pending_approval: "Pendente",
+    completed: "Concluído",
+    rejected: "Rejeitado"
+  };
+
+  const filteredMovements = useMemo(() => movements.filter(m => {
+    const typeLabel = (MOVEMENT_TYPES.find(t => t.value === m.type)?.label || "").toLowerCase();
+    const statusLabel = (statusLabels[m.status] || "").toLowerCase();
+    const searchTermLower = searchTerm.toLowerCase();
+
+    return m.assetName?.toLowerCase().includes(searchTermLower) ||
+      m.assetNumber?.toLowerCase().includes(searchTermLower) ||
+      typeLabel.includes(searchTermLower) ||
+      statusLabel.includes(searchTermLower);
+  }), [movements, searchTerm]);
+
+  const handleExportExcel = () => {
+    if (!filteredMovements || filteredMovements.length === 0) {
+      toast.error("Não há movimentações para exportar.");
+      return;
+    }
+
+    const statusLabels: { [key: string]: string } = {
+      pending_approval: "Pendente",
+      completed: "Concluído",
+      rejected: "Rejeitado"
+    };
+
+    const data = filteredMovements.map(m => {
+      const typeLabel = MOVEMENT_TYPES.find(t => t.value === m.type)?.label || m.type;
+      const origin = m.originProjectId ? `Obra: ${getProjectName(m.originProjectId)}` : 
+                     m.originCostCenter ? `CC: ${getCostCenterName(m.originCostCenter)}` : "-";
+      
+      let destination = "-";
+      if (m.type === "transfer_project") destination = `Obra: ${getProjectName(m.destinationProjectId)}`;
+      else if (m.type === "transfer_cost_center") destination = `CC: ${getCostCenterName(m.destinationCostCenter)}`;
+      else if (m.movementCategory === "write_off") destination = "Baixado";
+      else if (m.movementCategory === "partial_write_off") destination = "Baixa Parcial";
+
+      return {
+        "Data": new Date(m.date).toLocaleDateString('pt-BR'),
+        "Ativo": `${m.assetNumber} - ${m.assetName}`,
+        "Tipo": typeLabel,
+        "Origem": origin,
+        "Destino": destination,
+        "Valor Movimentado (R$)": m.value ? Number(m.value) : 0,
+        "Status": statusLabels[m.status] || m.status,
+        "Justificativa": m.reason || "",
+        "Solicitante": m.performedBy || "-",
+        "Aprovador": m.status === 'pending_approval'
+          ? getCostCenterResponsible(m.destinationCostCenter) || "Aguardando Aprovação"
+          : (m.approvedBy || (m.rejectedBy ? `Rejeitado por ${m.rejectedBy}` : "-")),
+        "Local Solicitante": m.requesterLocation ? `${m.requesterLocation.lat}, ${m.requesterLocation.lng}` : "-",
+        "Local Aprovador/Rejeitador": m.approverLocation ? `${m.approverLocation.lat}, ${m.approverLocation.lng}` : (m.rejecterLocation ? `${m.rejecterLocation.lat}, ${m.rejecterLocation.lng}` : "-")
+      };
+    });
+
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Movimentações");
+    XLSX.writeFile(wb, `movimentacoes_ativos_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Relatório exportado com sucesso!");
+  };
+
+  // Otimização: Memoizar as listas de opções para os Selects do modal
+  const assetOptions = useMemo(() => assets.map((asset) => (
+    <SelectItem key={asset.id} value={asset.id}>
+      {asset.assetNumber} - {asset.name}
+    </SelectItem>
+  )), [assets]);
+
+  const projectOptions = useMemo(() => projects.map((p) => (
+    <SelectItem key={p.id} value={p.id.toString()}>
+      {p.name}
+    </SelectItem>
+  )), [projects]);
+
+  const costCenterOptions = useMemo(() => costCenters?.map((cc: any) => (
+    <SelectItem key={cc.id} value={cc.code}>
+      {cc.code} - {cc.name}
+    </SelectItem>
+  )), [costCenters]);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Link href="/assets">
+            <Button variant="ghost" size="icon"><ArrowLeft className="h-5 w-5" /></Button>
+          </Link>
+          <h1 className="text-3xl font-bold text-slate-700">Movimentação de Ativos</h1>
+        </div>
+        
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={handleExportExcel}>
+            <Download className="mr-2 h-4 w-4" />
+            Exportar Excel
+          </Button>
+          <Button className="gap-2" onClick={() => setIsModalOpen(true)}>
+            <Plus size={20} />
+            Nova Movimentação
+          </Button>
+          <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
+            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>Registrar Movimentação ou Baixa</DialogTitle>
+                <DialogDescription>
+                  Selecione os ativos e o tipo de operação para atualizar o status e localização no sistema.
+                </DialogDescription>
+              </DialogHeader>
+              <form onSubmit={handleSubmit} className="space-y-4 py-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="col-span-2">
+                    <label className="text-sm font-medium mb-1 block">
+                      Adicionar Ativos ({selectedAssetIds.length} selecionados)
+                    </label>
+                    <div className="flex gap-2 mb-3">
+                      <div className="relative flex-1">
+                        <Input 
+                          ref={scanInputRef}
+                          placeholder="Bipe a plaqueta ou digite o número..."
+                          value={scanInput}
+                          onChange={(e) => setScanInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              const term = scanInput.trim();
+                              const asset = assets.find(a => 
+                                (a.tagNumber && a.tagNumber === term) || 
+                                (a.assetNumber && a.assetNumber === term)
+                              );
+                              if (asset) {
+                                handleAssetSelect(asset.id);
+                                setScanInput("");
+                                toast.success(`Ativo adicionado: ${asset.name}`);
+                              } else {
+                                toast.error("Ativo não encontrado.");
+                              }
+                            }
+                          }}
+                        />
+                      </div>
+                      <Button 
+                        type="button" 
+                        variant="outline" 
+                        size="icon" 
+                        onClick={() => setIsScanning(true)}
+                        title="Ler Código de Barras (Câmera)"
+                      >
+                        <QrCode className="h-4 w-4" />
+                      </Button>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <Select 
+                        value={""} 
+                        onValueChange={(v) => {
+                            handleAssetSelect(v);
+                        }}
+                      >
+                        <SelectTrigger className="flex-1">
+                          <SelectValue placeholder="Selecionar ativo para adicionar..." />
+                        </SelectTrigger>
+                        <SelectContent className="max-h-[300px]">
+                          {assetOptions}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {selectedAssetIds.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-2 p-2 border rounded bg-slate-50 max-h-[100px] overflow-y-auto">
+                        {selectedAssetIds.map(id => {
+                          const asset = assets.find(a => a.id === id);
+                          return (
+                            <div key={id} className="flex items-center gap-1 bg-white border px-2 py-1 rounded text-xs shadow-sm">
+                              <span className="font-medium">{asset?.tagNumber || asset?.assetNumber}</span>
+                              <span className="text-muted-foreground truncate max-w-[100px]">- {asset?.name}</span>
+                              <button type="button" onClick={() => handleRemoveAsset(id)} className="text-red-500 hover:text-red-700 ml-1"><X size={12} /></button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="col-span-1">
+                    <label className="text-sm font-medium mb-1 block">Tipo de Movimentação</label>
+                    <Select value={formData.type} onValueChange={(v) => setFormData(prev => ({ ...prev, type: v }))}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecione o tipo" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {MOVEMENT_TYPES.map((type) => (
+                          <SelectItem key={type.value} value={type.value}>
+                            {type.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="col-span-1">
+                    <label className="text-sm font-medium mb-1 block">Data da Ocorrência</label>
+                    <Input 
+                      type="date" 
+                      value={formData.date}
+                      onChange={(e) => setFormData(prev => ({ ...prev, date: e.target.value }))}
+                    />
+                  </div>
+                </div>
+
+                {/* Campos condicionais baseados no tipo */}
+                {formData.type === "transfer_project" && (
+                  <div className="bg-blue-50 p-4 rounded-md border border-blue-100">
+                    <h4 className="text-sm font-semibold text-blue-800 mb-3 flex items-center gap-2">
+                      <Truck size={16} /> Destino da Transferência
+                    </h4>
+                    <label className="text-sm font-medium mb-1 block">Obra de Destino</label>
+                    <Select value={formData.destinationProjectId} onValueChange={(v) => setFormData(prev => ({ ...prev, destinationProjectId: v }))}>
+                      <SelectTrigger className="bg-white">
+                        <SelectValue placeholder="Selecione a obra de destino" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {projectOptions}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+
+                {formData.type === "transfer_cost_center" && (
+                  <div className="bg-blue-50 p-4 rounded-md border border-blue-100">
+                    <h4 className="text-sm font-semibold text-blue-800 mb-3 flex items-center gap-2">
+                      <ArrowRightLeft size={16} /> Novo Centro de Custo
+                    </h4>
+                    <label className="text-sm font-medium mb-1 block">Centro de Custo de Destino</label>
+                    <Select value={formData.destinationCostCenter} onValueChange={(v) => setFormData(prev => ({ ...prev, destinationCostCenter: v }))}>
+                      <SelectTrigger className="bg-white">
+                        <SelectValue placeholder="Selecione o centro de custo" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {costCenterOptions}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+
+                {formData.type.startsWith("write_off") && (
+                  <div className="bg-red-50 p-4 rounded-md border border-red-100">
+                    <h4 className="text-sm font-semibold text-red-800 mb-3 flex items-center gap-2">
+                      <AlertTriangle size={16} /> Detalhes da Baixa
+                    </h4>
+                    <div className="grid grid-cols-2 gap-4">
+                      {formData.type === "write_off_sale" && (
+                        <div>
+                          <label className="text-sm font-medium mb-1 block">Valor de Venda (R$)</label>
+                          <Input 
+                            type="number" 
+                            placeholder="0,00"
+                            className="bg-white"
+                            value={formData.value}
+                            onChange={(e) => setFormData(prev => ({ ...prev, value: e.target.value }))}
+                          />
+                        </div>
+                      )}
+                      {formData.type === "write_off_partial" && (
+                        <>
+                          <div>
+                            <label className="text-sm font-medium mb-1 block">Percentual da Baixa (%)</label>
+                            <Input 
+                              type="number" 
+                              placeholder="0%"
+                              className="bg-white"
+                              value={formData.percentage}
+                              onChange={(e) => {
+                                setFormData(prev => ({ ...prev, percentage: e.target.value, value: "" })); // Clear value if % is used to avoid ambiguity
+                              }}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-sm font-medium mb-1 block">Valor da Baixa (R$ por ativo)</label>
+                            <Input 
+                              type="number" 
+                              placeholder="0,00"
+                              className="bg-white"
+                              value={formData.value}
+                              onChange={(e) => {
+                                setFormData(prev => ({ ...prev, value: e.target.value, percentage: "" }));
+                              }}
+                            />
+                          </div>
+                        </>
+                      )}
+                      <div className={formData.type === "write_off_sale" ? "" : "col-span-2"}>
+                        <label className="text-sm font-medium mb-1 block">Justificativa / Observações</label>
+                        <Textarea 
+                          placeholder="Descreva o motivo da baixa..."
+                          className="bg-white"
+                          value={formData.reason}
+                          onChange={(e) => setFormData(prev => ({ ...prev, reason: e.target.value }))}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <Button type="submit" className="w-full">Confirmar Movimentação</Button>
+              </form>
+
+              {/* Scanner Overlay - Movido para dentro do DialogContent */}
+              {isScanning && (
+                <div className="fixed inset-0 z-[1000] bg-black flex flex-col">
+                    <div className="relative flex-1 bg-black flex items-center justify-center">
+                        <video ref={videoRef} className="w-full h-full object-cover" playsInline muted />
+                        <div className="absolute inset-0 border-2 border-white/50 m-12 rounded-lg pointer-events-none"></div>
+                        <div className="absolute top-4 right-4 z-[101]">
+                            <Button variant="ghost" size="icon" className="text-white bg-black/50 hover:bg-black/70 rounded-full" onClick={() => setIsScanning(false)}>
+                                <X className="h-8 w-8" />
+                            </Button>
+                        </div>
+                    </div>
+                    <div className="p-6 bg-black text-white text-center font-medium">
+                        Aponte a câmera para o código do ativo
+                    </div>
+                </div>
+              )}
+            </DialogContent>
+          </Dialog>
+        </div>
+      </div>
+      <div className="flex items-center gap-4 bg-white p-4 rounded-lg border shadow-sm">
+        <Search className="text-gray-400" />
+        <Input 
+          placeholder="Buscar por número do ativo, nome ou tipo..." 
+          className="border-none shadow-none focus-visible:ring-0"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+        />
+      </div>
+
+      {/* Diálogo de Visualização de Detalhes */}
+      <Dialog open={!!viewingMovement} onOpenChange={(open) => !open && setViewingMovement(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Detalhes da Movimentação</DialogTitle>
+            {viewingMovement && (
+              <DialogDescription>
+                ID da Movimentação: {viewingMovement.id}
+              </DialogDescription>
+            )}
+          </DialogHeader>
+          {viewingMovement && (
+            <div className="py-4 space-y-4 text-sm">
+              <div className="p-4 bg-slate-50 rounded-lg border">
+                <h4 className="font-semibold text-base mb-2">Ativo Movimentado</h4>
+                {viewingMovement.isBatch && viewingMovement.assets ? (
+                  <div className="max-h-[150px] overflow-y-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-left text-muted-foreground border-b">
+                          <th className="pb-1">Ativo</th>
+                          <th className="pb-1">Número</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {viewingMovement.assets.map((a: any, idx: number) => (
+                          <tr key={idx} className="border-b border-slate-100 last:border-0">
+                            <td className="py-1 font-medium">{a.assetName}</td>
+                            <td className="py-1 font-mono">{a.assetNumber}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Nome</p>
+                    <p className="font-medium">{viewingMovement.assetName}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Número</p>
+                    <p className="font-medium">{viewingMovement.assetNumber}</p>
+                  </div>
+                </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-4 bg-slate-50 rounded-lg border">
+                  <h4 className="font-semibold text-base mb-2">Detalhes</h4>
+                  <div className="space-y-2">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Tipo</p>
+                      <p className="font-medium">{MOVEMENT_TYPES.find(t => t.value === viewingMovement.type)?.label}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Data</p>
+                      <p className="font-medium">{new Date(viewingMovement.date).toLocaleDateString('pt-BR')}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Solicitante</p>
+                      <p className="font-medium">{viewingMovement.performedBy}</p>
+                      {viewingMovement.requesterLocation && (
+                        <div className="mt-1">
+                          {loadingAddresses ? <span className="text-[10px] italic">Buscando endereço...</span> : (
+                            <a
+                              href={`https://www.google.com/maps?q=${viewingMovement.requesterLocation.lat},${viewingMovement.requesterLocation.lng}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[11px] text-blue-600 hover:underline block leading-tight"
+                            >
+                              {addresses.requester || "Ver no Mapa"}
+                            </a>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-4 bg-slate-50 rounded-lg border">
+                  <h4 className="font-semibold text-base mb-2">Status</h4>
+                  <div className="space-y-2">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Status Atual</p>
+                      <p className="font-bold text-lg">{statusLabels[viewingMovement.status]}</p>
+                    </div>
+                    {viewingMovement.status === 'pending_approval' && viewingMovement.destinationCostCenter && (
+                      <div>
+                        <p className="text-xs text-muted-foreground">Aguardando aprovação de</p>
+                        <p className="font-medium">
+                          {getCostCenterResponsible(viewingMovement.destinationCostCenter) || "Responsável não definido"}
+                        </p>
+                      </div>
+                    )}
+                    {viewingMovement.approvedBy && (
+                      <div>
+                        <p className="text-xs text-muted-foreground">Aprovado por</p>
+                        <p className="font-medium">{viewingMovement.approvedBy} em {new Date(viewingMovement.approvedAt).toLocaleString('pt-BR')}</p>
+                        {viewingMovement.approverLocation && (
+                          <div className="mt-1">
+                            {loadingAddresses ? <span className="text-[10px] italic">Buscando endereço...</span> : (
+                              <a
+                                href={`https://www.google.com/maps?q=${viewingMovement.approverLocation.lat},${viewingMovement.approverLocation.lng}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[11px] text-blue-600 hover:underline block leading-tight"
+                              >
+                                {addresses.approver || "Ver no Mapa"}
+                              </a>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {viewingMovement.rejectedBy && (
+                      <div>
+                        <p className="text-xs text-muted-foreground">Rejeitado por</p>
+                        <p className="font-medium">{viewingMovement.rejectedBy} em {new Date(viewingMovement.rejectedAt).toLocaleString('pt-BR')}</p>
+                        {viewingMovement.rejecterLocation && (
+                          <div className="mt-1">
+                            {loadingAddresses ? <span className="text-[10px] italic">Buscando endereço...</span> : (
+                              <a
+                                href={`https://www.google.com/maps?q=${viewingMovement.rejecterLocation.lat},${viewingMovement.rejecterLocation.lng}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[11px] text-blue-600 hover:underline block leading-tight"
+                              >
+                                {addresses.rejecter || "Ver no Mapa"}
+                              </a>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 bg-slate-50 rounded-lg border">
+                <h4 className="font-semibold text-base mb-2">Origem e Destino</h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Origem</p>
+                    {viewingMovement.type.includes('cost_center') ? (
+                      <>
+                        <p className="font-medium leading-tight">{`CC: ${getCostCenterName(viewingMovement.originCostCenter)}`}</p>
+                        <p className="text-xs text-muted-foreground leading-tight">Local: {getCostCenterDepartment(viewingMovement.originCostCenter) || "-"}</p>
+                        <p className="text-xs text-muted-foreground leading-tight">Responsável: {getCostCenterResponsible(viewingMovement.originCostCenter) || "-"}</p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="font-medium leading-tight">{`Obra: ${getProjectName(viewingMovement.originProjectId)}`}</p>
+                        <p className="text-xs text-muted-foreground leading-tight">Local: {getProjectLocation(viewingMovement.originProjectId)}</p>
+                      </>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Destino</p>
+                    {viewingMovement.type === 'transfer_project' ? (
+                      <>
+                        <p className="font-medium leading-tight">{`Obra: ${getProjectName(viewingMovement.destinationProjectId)}`}</p>
+                        <p className="text-xs text-muted-foreground leading-tight">Local: {getProjectLocation(viewingMovement.destinationProjectId)}</p>
+                      </>
+                    ) : viewingMovement.type === 'transfer_cost_center' ? (
+                      <>
+                        <p className="font-medium leading-tight">{`CC: ${getCostCenterName(viewingMovement.destinationCostCenter)}`}</p>
+                        <p className="text-xs text-muted-foreground leading-tight">Local: {getCostCenterDepartment(viewingMovement.destinationCostCenter) || "-"}</p>
+                        <p className="text-xs text-muted-foreground leading-tight">Responsável: {getCostCenterResponsible(viewingMovement.destinationCostCenter) || "-"}</p>
+                      </>
+                    ) : (
+                      <p className="font-medium leading-tight">{viewingMovement.movementCategory.includes('write_off') ? 'Baixa' : '-'}</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {(viewingMovement.value || viewingMovement.reason) && (
+                <div className="p-4 bg-slate-50 rounded-lg border">
+                  <h4 className="font-semibold text-base mb-2">Informações Adicionais</h4>
+                  <div className="grid grid-cols-2 gap-4">
+                    {viewingMovement.value && (
+                      <div>
+                        <p className="text-xs text-muted-foreground">Valor Movimentado</p>
+                        <p className="font-medium">R$ {Number(viewingMovement.value).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                      </div>
+                    )}
+                    {viewingMovement.reason && (
+                      <div className="col-span-2">
+                        <p className="text-xs text-muted-foreground">Justificativa</p>
+                        <p className="font-medium">{viewingMovement.reason}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <History className="h-5 w-5" />
+            Histórico de Movimentações
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Data</TableHead>
+                <TableHead>Ativo</TableHead>
+                <TableHead>Tipo</TableHead>
+                <TableHead>Origem</TableHead>
+                <TableHead>Destino / Detalhes</TableHead>
+                <TableHead>Solicitante</TableHead>
+                <TableHead>Aprovador</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Ações</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={9} className="text-center py-8">Carregando...</TableCell>
+                </TableRow>
+              ) : filteredMovements.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">Nenhuma movimentação encontrada.</TableCell>
+                </TableRow>
+              ) : (
+                filteredMovements.map((movement) => {
+                  const typeInfo = MOVEMENT_TYPES.find(t => t.value === movement.type);
+                  const isPendingApproval = movement.status === 'pending_approval';
+                  const isWriteOff = movement.movementCategory === "write_off";
+                  const isPartialWriteOff = movement.movementCategory === "partial_write_off";
+
+                  let isApprover = false;
+                  if (isPendingApproval && user) {
+                    if (movement.type === 'transfer_cost_center') {
+                        const userRole = (user as any)?.role;
+                        if (userRole === 'admin' || userRole === 'diretoria') {
+                            isApprover = true;
+                        } else {
+                        const destCC = costCenters.find(cc => cc.code === movement.destinationCostCenter);
+                        if (destCC && (destCC.responsible === user.name || destCC.responsibleEmail === user.email)) {
+                            isApprover = true;
+                        }
+                        }
+                    }
+                    // TODO: Adicionar lógica para aprovação de transferência entre obras se necessário
+                  }
+
+                  return (
+                    <TableRow 
+                      key={movement.id}
+                      className="cursor-pointer hover:bg-slate-50"
+                      onClick={() => setViewingMovement(movement)}
+                    >
+                      <TableCell>{new Date(movement.date).toLocaleDateString('pt-BR')}</TableCell>
+                      <TableCell>
+                        <div className="font-medium">{movement.assetNumber}</div>
+                        <div className="text-xs text-muted-foreground">{movement.assetName}</div>
+                      </TableCell>
+                      <TableCell>
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                          movement.movementCategory === "transfer" ? 'bg-blue-100 text-blue-800' : 
+                          isWriteOff ? 'bg-red-100 text-red-800' : 
+                          isPartialWriteOff ? 'bg-orange-100 text-orange-800' :
+                          'bg-gray-100 text-gray-800'
+                        }`}>
+                          {typeInfo?.label || movement.type}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {movement.originProjectId ? `Obra: ${getProjectName(movement.originProjectId)}` : 
+                         movement.originCostCenter ? `CC: ${getCostCenterName(movement.originCostCenter)}` : "-"}
+                      </TableCell>
+                      <TableCell>
+                        {movement.type === "transfer_project" && (
+                          <div className="flex items-center gap-1 text-blue-600">
+                            <ArrowRightLeft size={14} />
+                            <span>{getProjectName(movement.destinationProjectId)}</span>
+                          </div>
+                        )}
+                        {movement.type === "transfer_cost_center" && (
+                          <div className="flex items-center gap-1 text-blue-600">
+                            <ArrowRightLeft size={14} />
+                            <span>{getCostCenterName(movement.destinationCostCenter)}</span>
+                          </div>
+                        )}
+                        {isWriteOff && (
+                          <div className="flex flex-col">
+                            <span className="text-red-600 flex items-center gap-1">
+                              <XCircle size={14} /> Baixado
+                            </span>
+                            {movement.reason && <span className="text-xs text-gray-500 italic">{movement.reason}</span>}
+                          </div>
+                        )}
+                        {isPartialWriteOff && (
+                          <div className="flex flex-col">
+                            <span className="text-orange-600 flex items-center gap-1">
+                              <AlertTriangle size={14} /> Baixa Parcial
+                            </span>
+                            {movement.reason && <span className="text-xs text-gray-500 italic">{movement.reason}</span>}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {movement.performedBy || "-"}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {movement.status === 'pending_approval' ? (
+                          <span className="font-medium text-slate-700">
+                            {movement.type === 'transfer_cost_center' ? getCostCenterResponsible(movement.destinationCostCenter) : "Aprovação"}
+                          </span>
+                        ) : (
+                          <div className="flex flex-col">
+                            <span className="font-medium text-slate-700">{movement.approvedBy || (movement.rejectedBy ? `Rejeitado por ${movement.rejectedBy}` : "-")}</span>
+                            {(movement.approvedAt || movement.rejectedAt) && (
+                              <span className="text-[10px] text-slate-500">
+                                {new Date(movement.approvedAt || movement.rejectedAt).toLocaleString('pt-BR')}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {movement.status === 'pending_approval' && (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                            <Clock size={14} />
+                            Pendente
+                          </span>
+                        )}
+                        {movement.status === 'completed' && (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                            <Check size={14} />
+                            Concluído
+                          </span>
+                        )}
+                        {movement.status === 'rejected' && (
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                            <X size={14} />
+                            Rejeitado
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {isPendingApproval && isApprover && (
+                          <div className="flex items-center justify-end gap-2">
+                            <Button size="sm" variant="ghost" className="h-8 w-8 p-0 text-green-600 hover:bg-green-100 hover:text-green-700" onClick={(e) => { e.stopPropagation(); handleApproveMovement(movement); }}><ThumbsUp size={16} /></Button>
+                            <Button size="sm" variant="ghost" className="h-8 w-8 p-0 text-red-600 hover:bg-red-100 hover:text-red-700" onClick={(e) => { e.stopPropagation(); handleRejectMovement(movement); }}><ThumbsDown size={16} /></Button>
+                          </div>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

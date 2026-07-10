@@ -1,0 +1,21 @@
+{
+  "name": "GAI",
+  "short_name": "GAI",
+  "description": "Sistema de Controle de Oba e Ativos",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b543e",
+  "theme_color": "#0b543e",
+  "icons": [
+    {
+      "src": "/oba.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "/oba.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
