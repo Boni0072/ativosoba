@@ -366,7 +366,7 @@ export default function ExpensesPage() {
       quantity: expense.quantity ? String(expense.quantity) : "1",
       type: expense.type,
       category: expense.category || "",
-      date: expense.date ? new Date(expense.date).toISOString().split("T")[0] : new Date().toISOString().split("T")[0],
+      date: expense.date?.toDate ? expense.date.toDate().toISOString().split("T")[0] : (expense.date ? new Date(expense.date).toISOString().split("T")[0] : new Date().toISOString().split("T")[0]),
       notes: expense.notes || "",
       assetId: expense.assetId ? String(expense.assetId) : null,
       attachment: null, // Reset attachment on edit for now

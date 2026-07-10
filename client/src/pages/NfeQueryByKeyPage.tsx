@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { trpc } from '@/lib/trpc';
 import { 
   Search, FileText, Key, CheckCircle, AlertTriangle, 
   Loader2, X, Download, Info, Database, Globe, Shield,
@@ -116,17 +117,15 @@ export default function NfeQueryByKeyPage() {
 
   // Simula consulta na SEFAZ usando a conexão selecionada
   const handleQuery = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!selectedConnection) {
-      toast.error('Selecione uma conexão para realizar a consulta.');
-      return;
-    }
+        e.preventDefault();
 
     if (!isValidKey) {
       toast.error('A chave de acesso deve ter exatamente 44 dígitos.');
       return;
     }
+
+        // A seleção de conexão não é mais necessária aqui, pois o backend decide como consultar.
+        // A lógica de conexão pode ser reimplementada no backend se necessário.
 
     const conn = connections.find(c => c.id === selectedConnection);
     if (!conn) {
@@ -143,20 +142,12 @@ export default function NfeQueryByKeyPage() {
     setStep('query');
 
     try {
-      // Usa o host da conexão ou fallback para localhost
-      const host = conn.config.host ? (conn.config.host.startsWith('http') ? conn.config.host : `http://${conn.config.host}`) : 'http://localhost:3001';
-      const apiUrl = `${host}/api/nfe/${nfeKey.replace(/\D/g, '')}`;
-      const response = await fetch(apiUrl);
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Falha ao consultar a NF-e. Verifique a chave e tente novamente.');
-      }
-
-      const nfeData = await response.json();
+            // Utiliza o cliente tRPC para chamar o endpoint do backend
+            const nfeData = await trpc.nfe.getNfeData.mutate({ accessKey: nfeKey.replace(/\D/g, '') });
 
       // Adiciona informações da conexão usada
-      nfeData.conexaoUsada = conn.name;
-      nfeData.provider = conn.type;
+            (nfeData as any).conexaoUsada = conn.name;
+            (nfeData as any).provider = conn.type;
 
       setResult(nfeData);
       setShowModal(true);
