@@ -541,7 +541,7 @@ export default function ReportsPage() {
           newCC || "-",
           result?.verified ? "Verificado" : "Não Verificado",
           // @ts-ignore - observations might not be in interface but exists in data
-          result?.observations || ""
+          result.observations || ""
         ];
       });
 
@@ -1194,7 +1194,7 @@ export default function ReportsPage() {
                         "Aprovador": schedule.approvedBy || "-",
                         "Data Aprovação": schedule.approvedAt ? new Date(schedule.approvedAt).toLocaleString('pt-BR') : "-",
                         "Obs. Agendamento": schedule.notes || "-",
-                        "Obs. Item": item.observations || "-"
+                        "Obs. Item": (item as any).observations || "-"
                       };
                     });
                   });
@@ -1290,7 +1290,7 @@ export default function ReportsPage() {
                           <TableCell>
                             <div className="flex flex-col gap-1 max-w-[200px] text-xs">
                                 {schedule.notes && <span className="text-muted-foreground">Agend: {schedule.notes}</span>}
-                                {item.observations && <span>Item: {item.observations}</span>}
+                                {(item as any).observations && <span>Item: {(item as any).observations}</span>}
                             </div>
                           </TableCell>
                         </TableRow>
