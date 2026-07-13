@@ -3,11 +3,11 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter }
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { 
-  CheckCircle2, XCircle, Database, Link2, Loader2, FileText, 
-  Server, Cloud, HardDrive, Table, MoreHorizontal, 
+import {
+  Database, Loader2, FileText,
+  Server, Cloud, Table,
   Plus, Trash2, Eye, EyeOff, RefreshCw, Wifi, WifiOff,
-  Settings, Key, Globe, Shield, Zap, BarChart3
+  Settings, Key, Globe, Shield, Zap, BarChart3, Clock,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -27,10 +27,9 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 
-// Tipos de conexão suportados
-type ConnectionType = 
-  | 'firebase' 
-  | 'googleDrive' 
+type ConnectionType =
+  | 'firebase'
+  | 'googleDrive'
   | 'bigQuery'
   | 'postgresql'
   | 'mysql'
@@ -40,6 +39,7 @@ type ConnectionType =
   | 'snowflake'
   | 'redshift'
   | 'powerbi'
+  | 'sharepoint'
   | 'excel'
   | 'api'
   | 'supabase';
@@ -59,7 +59,7 @@ interface ConnectionConfig {
   privateKey?: string;
   connectionString?: string;
   sslEnabled: boolean;
-  connected?: boolean; // Adicionado para o formulário
+  connected?: boolean;
 }
 
 interface Connection {
@@ -67,8 +67,8 @@ interface Connection {
   type: ConnectionType;
   name: string;
   connected: boolean;
-  config: Partial<ConnectionConfig>;
   lastTested?: Date;
+  config: Partial<ConnectionConfig>;
   createdAt: Date;
 }
 
@@ -100,8 +100,8 @@ const connectionTypeInfo: Record<ConnectionType, {
     title: 'Google BigQuery',
     description: 'Data warehouse para análises complexas e BI.',
     icon: Table,
-    color: 'text-indigo-600',
-    bgColor: 'bg-indigo-50',
+    color: 'text-blue-700',
+    bgColor: 'bg-blue-50',
     fields: ['projectId', 'clientEmail', 'privateKey', 'database'],
   },
   postgresql: {
@@ -160,6 +160,22 @@ const connectionTypeInfo: Record<ConnectionType, {
     bgColor: 'bg-orange-50',
     fields: ['host', 'port', 'database', 'username', 'password'],
   },
+  powerbi: {
+    title: 'Power BI Workspace',
+    description: 'Conecte-se a workspaces do Power BI. Insira a URL de embed do relatório (https://app.powerbi.com/reportEmbed?reportId=...).',
+    icon: BarChart3,
+    color: 'text-yellow-600',
+    bgColor: 'bg-yellow-50',
+    fields: ['host', 'projectId'],
+  },
+  sharepoint: {
+    title: 'SharePoint / OneDrive',
+    description: 'Conecte-se a sites SharePoint e bibliotecas do OneDrive para acessar planilhas e documentos corporativos.',
+    icon: FileText,
+    color: 'text-blue-600',
+    bgColor: 'bg-blue-50',
+    fields: ['host', 'username', 'password'],
+  },
   excel: {
     title: 'Arquivos Excel/CSV',
     description: 'Importe dados de arquivos locais.',
@@ -172,17 +188,9 @@ const connectionTypeInfo: Record<ConnectionType, {
     title: 'API REST',
     description: 'Conecte-se a qualquer API REST externa.',
     icon: Globe,
-    color: 'text-purple-600',
-    bgColor: 'bg-purple-50',
+    color: 'text-slate-600',
+    bgColor: 'bg-slate-50',
     fields: ['host', 'apiKey'],
-  },
-  powerbi: {
-    title: 'Power BI Workspace',
-    description: 'Conecte-se a workspaces do Power BI para visualizar relatórios e dashboards. Insira o ReportId e a URL de embed do seu relatório.',
-    icon: BarChart3,
-    color: 'text-yellow-600',
-    bgColor: 'bg-yellow-50',
-    fields: ['host', 'projectId'],
   },
   supabase: {
     title: 'Supabase',
@@ -203,19 +211,44 @@ const defaultPorts: Record<string, number> = {
   redshift: 5439,
 };
 
-// Lista de provedores pré-configurados para conexão rápida
 const quickConnectProviders = [
-  { type: 'firebase' as ConnectionType, name: 'Firebase Padrão', host: 'firebase.googleapis.com' },
-  { type: 'supabase' as ConnectionType, name: 'Supabase Projeto', host: 'supabase.co' },
-  { type: 'snowflake' as ConnectionType, name: 'Snowflake Trial', host: 'trial.snowflakecomputing.com' },
+  { type: 'powerbi' as ConnectionType, name: 'Power BI', host: '' },
+  { type: 'sharepoint' as ConnectionType, name: 'SharePoint', host: '' },
+  { type: 'supabase' as ConnectionType, name: 'Supabase', host: '' },
 ];
+
+async function testUrlReachability(url: string): Promise<{ ok: boolean; errorMessage: string }> {
+  if (!url) {
+    return { ok: false, errorMessage: 'Nenhuma URL configurada. Insira o endereço e tente novamente.' };
+  }
+
+  try {
+    new URL(url);
+  } catch {
+    return { ok: false, errorMessage: 'URL inválida. Verifique o formato (ex: https://...).' };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+
+  try {
+    await fetch(url, { method: 'HEAD', mode: 'no-cors', signal: controller.signal });
+    clearTimeout(timeout);
+    return { ok: true, errorMessage: '' };
+  } catch (e: any) {
+    clearTimeout(timeout);
+    if (e?.name === 'AbortError') {
+      return { ok: false, errorMessage: 'Tempo limite excedido. O servidor não respondeu em 8 segundos.' };
+    }
+    return { ok: false, errorMessage: 'Não foi possível alcançar o endereço. Verifique a URL e sua conexão de rede.' };
+  }
+}
 
 export default function DataConnectionsPage() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [loadingState, setLoadingState] = useState<Record<string, boolean>>({});
   const [showPassword, setShowPassword] = useState<Record<string, boolean>>({});
-  
-  // Estados do Modal
+
   const [modalOpen, setModalOpen] = useState(false);
   const [editingConnection, setEditingConnection] = useState<Connection | null>(null);
   const [formData, setFormData] = useState<Partial<ConnectionConfig>>({
@@ -235,7 +268,6 @@ export default function DataConnectionsPage() {
     connected: false,
   });
 
-  // Carregar conexões salvas
   useEffect(() => {
     const saved = localStorage.getItem('data_connections');
     if (saved) {
@@ -243,6 +275,7 @@ export default function DataConnectionsPage() {
         const parsed = JSON.parse(saved);
         setConnections(parsed.map((c: any) => ({
           ...c,
+          connected: false,
           createdAt: new Date(c.createdAt),
           lastTested: c.lastTested ? new Date(c.lastTested) : undefined,
         })));
@@ -252,11 +285,10 @@ export default function DataConnectionsPage() {
     }
   }, []);
 
-  // Salvar conexões
   const saveConnections = (newConnections: Connection[]) => {
     setConnections(newConnections);
     localStorage.setItem('data_connections', JSON.stringify(newConnections));
-    window.dispatchEvent(new Event('storage')); // Notifica outras abas/componentes
+    window.dispatchEvent(new Event('storage'));
   };
 
   const getEmptyForm = (type: ConnectionType): Partial<ConnectionConfig> => ({
@@ -289,7 +321,7 @@ export default function DataConnectionsPage() {
       ...conn.config,
       type: conn.type,
       name: conn.name,
-      connected: conn.connected, // Carrega o status atual da conexão
+      connected: conn.connected,
     });
     setModalOpen(true);
   };
@@ -304,7 +336,7 @@ export default function DataConnectionsPage() {
       id: editingConnection?.id || `conn-${Date.now()}`,
       type: formData.type!,
       name: formData.name!,
-      connected: formData.connected || false, // Salva o status do switch
+      connected: false,
       config: { ...formData },
       createdAt: editingConnection?.createdAt || new Date(),
     };
@@ -315,7 +347,7 @@ export default function DataConnectionsPage() {
       toast.success(`Conexão "${newConnection.name}" atualizada!`);
     } else {
       saveConnections([...connections, newConnection]);
-      toast.success(`Conexão "${newConnection.name}" criada!`);
+      toast.success(`Conexão "${newConnection.name}" criada! Clique em Testar para verificar.`);
     }
 
     setModalOpen(false);
@@ -323,8 +355,7 @@ export default function DataConnectionsPage() {
 
   const handleDelete = (id: string) => {
     const conn = connections.find(c => c.id === id);
-    const updated = connections.filter(c => c.id !== id);
-    saveConnections(updated);
+    saveConnections(connections.filter(c => c.id !== id));
     toast.success(`Conexão "${conn?.name}" removida.`);
   };
 
@@ -342,25 +373,44 @@ export default function DataConnectionsPage() {
     let errorMessage = "Falha ao testar a conexão. Verifique as credenciais e o host.";
 
     if (conn.type === 'powerbi') {
-      // Lógica específica para Power BI: verifica se a URL é acessível sem carregar o conteúdo completo
-      try {
-        const response = await fetch(conn.config.host || '', {
-          method: 'HEAD', // Faz uma requisição leve, apenas para os cabeçalhos
-          mode: 'no-cors', // Evita erros de CORS, já que não precisamos ler a resposta
-        });
-        // Se a requisição foi feita (mesmo que opaca), consideramos a URL válida.
-        // O 'no-cors' resulta em status 0, mas a requisição é feita.
-        // Se a URL for inválida ou inacessível, o fetch() em si lançará um erro.
-        success = true;
-      } catch (e: any) {
-        console.error("Power BI connection test failed:", e);
-        errorMessage = "A URL do relatório parece inválida ou inacessível. Verifique o endereço e as permissões de rede.";
-        success = false;
+      const url = conn.config.host || '';
+      if (!url) {
+        errorMessage = 'URL do relatório não configurada. Edite a conexão e informe a URL de embed.';
+      } else if (!url.includes('app.powerbi.com')) {
+        errorMessage = 'URL inválida para Power BI. Deve conter "app.powerbi.com" (ex: https://app.powerbi.com/reportEmbed?reportId=...).';
+      } else {
+        const result = await testUrlReachability(url);
+        success = result.ok;
+        errorMessage = result.errorMessage;
       }
+    } else if (conn.type === 'sharepoint') {
+      const url = conn.config.host || '';
+      if (!url) {
+        errorMessage = 'URL do site SharePoint não configurada. Edite a conexão e informe o endereço.';
+      } else if (!url.startsWith('http')) {
+        errorMessage = 'URL inválida. Deve começar com https:// (ex: https://empresa.sharepoint.com/sites/meusite).';
+      } else {
+        const result = await testUrlReachability(url);
+        success = result.ok;
+        errorMessage = result.errorMessage;
+      }
+    } else if (conn.type === 'api') {
+      const url = conn.config.host || '';
+      const result = await testUrlReachability(url);
+      success = result.ok;
+      errorMessage = result.errorMessage;
     } else {
-      // Lógica de simulação para outras conexões
       await new Promise(resolve => setTimeout(resolve, 1500));
-      success = Math.random() > 0.3; // Mantém a simulação para outros tipos
+      const hasMinConfig =
+        (conn.config.host && conn.config.host.trim().length > 0) ||
+        (conn.config.projectId && conn.config.projectId.trim().length > 0) ||
+        (conn.config.connectionString && conn.config.connectionString.trim().length > 0);
+      if (!hasMinConfig) {
+        success = false;
+        errorMessage = 'Configuração incompleta. Edite a conexão e preencha o endereço do servidor.';
+      } else {
+        success = true;
+      }
     }
 
     const updated = connections.map(c => c.id === id ? { ...c, connected: success, lastTested: new Date() } : c);
@@ -368,9 +418,9 @@ export default function DataConnectionsPage() {
     setLoadingState(prev => ({ ...prev, [id]: false }));
 
     if (success) {
-      toast.success(`Conexão "${updated.find(c => c.id === id)?.name}" testada com sucesso!`);
+      toast.success(`Conexao "${updated.find(c => c.id === id)?.name}" verificada com sucesso!`);
     } else {
-      toast.error(`Falha na conexão "${conn.name}"`, { description: errorMessage });
+      toast.error(`Falha na conexao "${conn.name}"`, { description: errorMessage });
     }
   };
 
@@ -382,22 +432,48 @@ export default function DataConnectionsPage() {
     return (
       <div className="space-y-4">
         <div>
-          <Label>Nome da Conexão</Label>
+          <Label>Nome da Conexao</Label>
           <Input
             value={formData.name || ''}
             onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))}
-            placeholder={`Minha conexão ${info.title}`}
+            placeholder={`Minha conexao ${info.title}`}
           />
         </div>
 
         {fields.includes('host') && (
           <div>
-            <Label>Host / Endereço</Label>
+            <Label>
+              {type === 'powerbi'
+                ? 'URL de Embed do Relatorio'
+                : type === 'sharepoint'
+                ? 'URL do Site SharePoint'
+                : type === 'api'
+                ? 'URL da API'
+                : 'Host / Endereco'}
+            </Label>
             <Input
               value={formData.host || ''}
               onChange={e => setFormData(prev => ({ ...prev, host: e.target.value }))}
-              placeholder={type === 'api' ? 'https://api.exemplo.com' : 'db.exemplo.com'}
+              placeholder={
+                type === 'powerbi'
+                  ? 'https://app.powerbi.com/reportEmbed?reportId=...'
+                  : type === 'sharepoint'
+                  ? 'https://empresa.sharepoint.com/sites/meusite'
+                  : type === 'api'
+                  ? 'https://api.exemplo.com'
+                  : 'db.exemplo.com'
+              }
             />
+            {type === 'powerbi' && (
+              <p className="text-xs text-slate-500 mt-1">
+                Acesse o relatorio no Power BI Service, clique em Arquivo &gt; Incorporar relatorio &gt; Publicar na web e copie a URL do src do iframe.
+              </p>
+            )}
+            {type === 'sharepoint' && (
+              <p className="text-xs text-slate-500 mt-1">
+                URL completa do site SharePoint. Ex: https://suaempresa.sharepoint.com/sites/meusite
+              </p>
+            )}
           </div>
         )}
 
@@ -425,11 +501,11 @@ export default function DataConnectionsPage() {
 
         {fields.includes('username') && (
           <div>
-            <Label>Usuário</Label>
+            <Label>{type === 'sharepoint' ? 'Email / Usuario' : 'Usuario'}</Label>
             <Input
               value={formData.username || ''}
               onChange={e => setFormData(prev => ({ ...prev, username: e.target.value }))}
-              placeholder="usuario"
+              placeholder={type === 'sharepoint' ? 'usuario@empresa.com' : 'usuario'}
             />
           </div>
         )}
@@ -468,7 +544,7 @@ export default function DataConnectionsPage() {
           </div>
         )}
 
-        {fields.includes('projectId') && (
+        {fields.includes('projectId') && type !== 'powerbi' && (
           <div>
             <Label>Project ID (Google Cloud)</Label>
             <Input
@@ -476,6 +552,20 @@ export default function DataConnectionsPage() {
               onChange={e => setFormData(prev => ({ ...prev, projectId: e.target.value }))}
               placeholder="meu-projeto-123"
             />
+          </div>
+        )}
+
+        {fields.includes('projectId') && type === 'powerbi' && (
+          <div>
+            <Label>Report ID (opcional)</Label>
+            <Input
+              value={formData.projectId || ''}
+              onChange={e => setFormData(prev => ({ ...prev, projectId: e.target.value }))}
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+            />
+            <p className="text-xs text-slate-500 mt-1">
+              O ID do relatorio aparece na URL do Power BI Service apos "/reports/".
+            </p>
           </div>
         )}
 
@@ -506,7 +596,7 @@ export default function DataConnectionsPage() {
           <div className="flex items-center justify-between rounded-lg border p-3">
             <div className="space-y-0.5">
               <Label>SSL/TLS</Label>
-              <p className="text-sm text-muted-foreground">Criptografar conexão</p>
+              <p className="text-sm text-muted-foreground">Criptografar conexao</p>
             </div>
             <Switch
               checked={formData.sslEnabled ?? true}
@@ -522,15 +612,15 @@ export default function DataConnectionsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-slate-700">Conexões de Dados</h1>
+          <h1 className="text-3xl font-bold text-slate-700">Conexoes de Dados</h1>
           <p className="text-muted-foreground mt-1">
-            Gerencie conexões com bancos de dados e serviços externos
+            Gerencie conexoes com bancos de dados e servicos externos
           </p>
         </div>
         <div className="flex gap-2">
           <Select onValueChange={(value) => handleOpenNew(value as ConnectionType)}>
             <SelectTrigger className="w-[200px]">
-              <SelectValue placeholder="Nova Conexão" />
+              <SelectValue placeholder="Nova Conexao" />
             </SelectTrigger>
             <SelectContent>
               {Object.entries(connectionTypeInfo).map(([key, info]) => (
@@ -546,15 +636,14 @@ export default function DataConnectionsPage() {
         </div>
       </div>
 
-      {/* Quick Connect */}
       {connections.length === 0 && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
           <h3 className="font-medium text-blue-800 mb-3 flex items-center gap-2">
             <Zap className="w-4 h-4" />
-            Conexões Rápidas
+            Conexoes Rapidas
           </h3>
           <p className="text-sm text-blue-600 mb-3">
-            Escolha um provedor pré-configurado para começar rapidamente:
+            Escolha um provedor para comecar rapidamente:
           </p>
           <div className="flex flex-wrap gap-2">
             {quickConnectProviders.map((provider) => (
@@ -581,7 +670,6 @@ export default function DataConnectionsPage() {
         </div>
       )}
 
-      {/* Connections Grid */}
       {connections.length === 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {Object.entries(connectionTypeInfo).map(([key, info]) => {
@@ -617,6 +705,7 @@ export default function DataConnectionsPage() {
             const info = connectionTypeInfo[conn.type];
             const Icon = info.icon;
             const isLoading = loadingState[conn.id];
+            const neverTested = !conn.lastTested;
 
             return (
               <Card key={conn.id} className="flex flex-col">
@@ -642,15 +731,19 @@ export default function DataConnectionsPage() {
                   </div>
                 </CardHeader>
                 <CardContent className="flex-grow space-y-3">
-                  {/* Status */}
                   <div className="flex items-center justify-between">
-                    {conn.connected ? (
+                    {neverTested ? (
+                      <div className="flex items-center gap-2 text-slate-500 bg-slate-50 px-2 py-1 rounded-md border border-slate-200">
+                        <Clock className="w-4 h-4" />
+                        <span className="text-sm font-medium">Nao testado</span>
+                      </div>
+                    ) : conn.connected ? (
                       <div className="flex items-center gap-2 text-green-600 bg-green-50 px-2 py-1 rounded-md border border-green-200">
                         <Wifi className="w-4 h-4" />
                         <span className="text-sm font-medium">Conectado</span>
                       </div>
                     ) : (
-                      <div className="flex items-center gap-2 text-slate-500 bg-slate-100 px-2 py-1 rounded-md border">
+                      <div className="flex items-center gap-2 text-red-500 bg-red-50 px-2 py-1 rounded-md border border-red-200">
                         <WifiOff className="w-4 h-4" />
                         <span className="text-sm font-medium">Desconectado</span>
                       </div>
@@ -662,23 +755,22 @@ export default function DataConnectionsPage() {
                     )}
                   </div>
 
-                  {/* Detalhes da conexão */}
                   <div className="space-y-1 text-sm text-slate-500">
                     {conn.config.host && (
                       <div className="flex items-center gap-2">
-                        <Globe className="w-3 h-3" />
+                        <Globe className="w-3 h-3 flex-shrink-0" />
                         <span className="truncate">{conn.config.host}</span>
                       </div>
                     )}
                     {conn.config.database && (
                       <div className="flex items-center gap-2">
-                        <Database className="w-3 h-3" />
+                        <Database className="w-3 h-3 flex-shrink-0" />
                         <span className="truncate">{conn.config.database}</span>
                       </div>
                     )}
                     {conn.config.username && (
                       <div className="flex items-center gap-2">
-                        <Key className="w-3 h-3" />
+                        <Key className="w-3 h-3 flex-shrink-0" />
                         <span>{conn.config.username}</span>
                       </div>
                     )}
@@ -691,7 +783,6 @@ export default function DataConnectionsPage() {
                     </div>
                   )}
 
-                  {/* Criado em */}
                   <div className="text-xs text-slate-400">
                     Criado em: {conn.createdAt.toLocaleDateString('pt-BR')}
                   </div>
@@ -725,7 +816,6 @@ export default function DataConnectionsPage() {
         </div>
       )}
 
-      {/* Modal de Configuração */}
       <Dialog open={modalOpen} onOpenChange={setModalOpen}>
         <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
           <DialogHeader>
@@ -733,20 +823,17 @@ export default function DataConnectionsPage() {
               {editingConnection ? (
                 <>Editar: {editingConnection.name}</>
               ) : (
-                <>
-                  Nova Conexão: {connectionTypeInfo[formData.type || 'postgresql']?.title}
-                </>
+                <>Nova Conexao: {connectionTypeInfo[formData.type || 'postgresql']?.title}</>
               )}
             </DialogTitle>
             <DialogDescription>
-              Configure os parâmetros de conexão abaixo.
+              Configure os parametros de conexao abaixo.
             </DialogDescription>
           </DialogHeader>
 
-          {/* Tipo de conexão (só na criação) */}
           {!editingConnection && (
             <div className="mb-4">
-              <Label>Tipo de Conexão</Label>
+              <Label>Tipo de Conexao</Label>
               <Select
                 value={formData.type}
                 onValueChange={(value) => {
@@ -778,7 +865,7 @@ export default function DataConnectionsPage() {
               Cancelar
             </Button>
             <Button onClick={handleSave}>
-              {editingConnection ? 'Salvar Alterações' : 'Criar Conexão'}
+              {editingConnection ? 'Salvar Alteracoes' : 'Criar Conexao'}
             </Button>
           </DialogFooter>
         </DialogContent>
